@@ -1,0 +1,5 @@
+host=192.168.1.10
+port=8791
+ssid=MyWifiProfile
+token=PASTE-THE-TOKEN-FROM-THE-SERVER
+# debug=1
