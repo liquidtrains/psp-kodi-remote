@@ -199,6 +199,20 @@ try:
     fake([], cur=0)
     api("POST", "/t/lib/play/m/1")
     check(fake()["playlist"] == ["/lib/alpha.mkv"] and "Player.Open" in fake()["calls"], "play now with nothing in the queue adds it and opens it")
+    # ---- channels edited from the PSP
+    cf = f"{tmp}/.config/tvplay-api/channels.txt"
+    os.makedirs(os.path.dirname(cf), exist_ok=True)
+    open(cf, "w").write("# my list\ntwitch:foo_bar  # a friend\n")
+    check(api("POST", "/t/channel/add/kick/New_Person")[0] == 200 and open(cf).read() == "# my list\ntwitch:foo_bar  # a friend\nkick:new_person\n", "add keeps comments and lowercases the name")
+    check(api("POST", "/t/channel/add/kick/new_person")[0] == 200 and open(cf).read().count("new_person") == 1, "adding twice does not duplicate")
+    check(api("POST", "/t/channel/add/twitch/@Hello_1")[0] == 200 and "twitch:hello_1" in open(cf).read(), "a leading @ is dropped")
+    check(api("POST", "/t/channel/add/twitch/a")[0] == 400 and api("POST", "/t/channel/add/twitch/bad%20name")[0] == 400 and api("POST", "/t/channel/add/youtube/abcd")[0] in (400, 404), "bad names and platforms refused")
+    check(api("POST", "/t/channel/remove/kick/new_person")[0] == 200 and "new_person" not in open(cf).read() and "# my list" in open(cf).read(), "remove takes out only that line")
+    check(api("POST", "/t/channel/remove/kick/nobody_here")[0] == 404, "removing a missing channel is 404")
+    check("twitch|hello_1|" in api("GET", "/t/channels")[1], "the new channel shows in the Live list")
+    os.remove(cf)
+    check(api("GET", "/t/channels")[0] == 200, "an empty list is fine")
+    check(api("POST", "/t/channel/add/kick/first_one")[0] == 200 and open(cf).read().strip().endswith("kick:first_one"), "add creates the file when there is none")
     # ---- auth
     req = urllib.request.Request(f"http://127.0.0.1:{APORT}/t/status", headers={"X-Token": "wrong"})
     try:

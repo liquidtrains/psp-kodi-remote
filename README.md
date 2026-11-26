@@ -2,7 +2,7 @@
 
 A PSP homebrew (EBOOT) that controls Kodi over Wi-Fi. It has a dark graphical interface, a now-playing bar with progress, a volume bar, and menus for browsing your Kodi video library (continue watching, recently added, movies, TV shows by season), the play queue, audio and subtitle tracks, typing into Kodi, power actions and settings. A bridge server adds seek, shuffle and repeat, live Twitch and Kick channels, random or in-order episodes, IPTV favourites, a sleep timer and queue undo.
 
-Version 0.4.0. Tested on a PSP-3000 running ARK-4 (6.61) in infrastructure mode, against Kodi 21 (LibreELEC). It is written for one person's setup, so read "What you need" first.
+Version 0.4.1. Tested on a PSP-3000 running ARK-4 (6.61) in infrastructure mode, against Kodi 21 (LibreELEC). It is written for one person's setup, so read "What you need" first.
 
 ## Two ways to connect
 
@@ -34,7 +34,7 @@ Kodi alone:   PSP --HTTP, Basic auth--> Kodi web server (JSON-RPC)
    KODI_URL=http://KODI-IP:8080/jsonrpc TVPLAY_API_BIND=YOUR-LAN-IP python3 server/tvplay-api.py
    ```
 
-   The first start creates `~/.config/tvplay-api/token`. Optional: `~/.config/tvplay-api/channels.txt` with one `twitch:name` or `kick:name` per line.
+   The first start creates `~/.config/tvplay-api/token`. The Live list starts empty: add channels from the PSP (Live, then "+ Add a Twitch channel" or "+ Add a Kick channel"), or put one `twitch:name` or `kick:name` per line in `~/.config/tvplay-api/channels.txt`.
 2. Build the app (needs the PSPDEV toolchain, for example its Docker image). one EBOOT serves both modes.
 
    ```

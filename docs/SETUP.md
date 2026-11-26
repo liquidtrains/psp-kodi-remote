@@ -94,8 +94,8 @@ Limits: the scan covers one /24 network and port 8080 only (type the address for
 - **Type text into Kodi:** the PSP keyboard types into whatever text box Kodi has open (search, a login). Press OK on the remote afterwards.
 - **Power:** refresh the video library; restart Kodi (about 30 seconds); restart or power off the Kodi machine (shown in red). The last three need START pressed twice within five seconds. In server mode the server also refuses a second power action within a minute.
 - **Settings:** server address, port, token, Wi-Fi network name, debug line and the start mode, or in Kodi-alone mode the Kodi address, user name and password. Changes are saved to the card at once (`config.txt`, or `direct.txt`); the first save in a session keeps the old file as `config.txt.bak`. A mode change applies after restarting the app.
-- **Live list** (server mode): each live channel shows its stream category and title, the one you are watching is marked NOW, and the list refreshes itself every 30 seconds while it is open.
-- **Version:** shown on the boot screen, every connect screen and the help screen, as `0.4.0 (commit)`.
+- **Live list** (server mode): the list starts empty and is yours. The rows at the bottom, "+ Add a Twitch channel", "+ Add a Kick channel" and "- Remove a channel", ask for a name on the PSP keyboard (the part after the last `/` in the channel's web address) and edit `~/.config/tvplay-api/channels.txt` on the server for you; comments and other lines in that file are kept, and you can still edit it by hand. Each live channel shows its stream category and title, the one you are watching is marked NOW, and the list refreshes itself every 30 seconds while it is open.
+- **Version:** shown on the boot screen, every connect screen and the help screen, as `0.4.1 (commit)`.
 
 ## Optional: ARK-4 extras
 

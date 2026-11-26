@@ -1,4 +1,5 @@
 #include "app.h"
+#include <strings.h>
 
 Item g_items[128];
 
@@ -87,6 +88,11 @@ void parse_lines(int screen, int code) {
         memcpy(g_items, tmp, sizeof(Item) * n);
     }
     if (screen == S_LIB && g_want_sel >= 0) { g_sel = g_want_sel < g_n ? g_want_sel : (g_n ? g_n - 1 : 0); g_want_sel = -1; g_scroll = g_sel >= 8 ? g_sel - 4 : 0; }
+    if (screen == S_LIVE) {                           /* the channel list is the user's own: these rows add and remove names, so a new install is never empty-handed */
+        add("+ Add a Twitch channel", "+twitch", 0, 1);
+        add("+ Add a Kick channel", "+kick", 0, 1);
+        add("- Remove a channel", "-", 0, 1);
+    }
     if (screen == S_LIVE && g_live_keep[0]) {          /* a refresh in place: keep the cursor on the same channel */
         int i;
         for (i = 0; i < g_n; i++) if (!strcmp(g_items[i].label, g_live_keep)) { g_sel = i; break; }
@@ -194,6 +200,32 @@ static void type_text(void) {                          /* the PSP keyboard types
     act("POST", path, 10, "Typing");
 }
 
+static void live_edit(const char *tag) {              /* type a channel name on the PSP keyboard and add it to, or take it off, the server's list */
+    char name[40], enc[100], path[160], prompt[80];
+    const char *plat = "twitch";
+    if (tag[0] == '-') {
+        snprintf(prompt, sizeof(prompt), "Name of the channel to remove (as shown in the list)");
+        if (osk_input(prompt, "", name, sizeof(name)) != 1 || !name[0]) return;
+        {   /* find which platform lists it */
+            int i;
+            for (i = 0; i < g_n; i++) if (g_items[i].tag[0] != '+' && g_items[i].tag[0] != '-' && !strcasecmp(g_items[i].label, name)) { plat = g_items[i].tag; break; }
+            if (i == g_n) { toast(C_ERR, "That name is not in the list"); return; }
+        }
+        urlenc(name, enc, sizeof(enc));
+        snprintf(path, sizeof(path), "/t/channel/remove/%s/%s", plat, enc);
+        act("POST", path, 10, "Removing the channel");
+    } else {
+        plat = strcmp(tag, "+kick") ? "twitch" : "kick";
+        snprintf(prompt, sizeof(prompt), "%s channel name (the part after the last / in its web address)", plat[0] == 't' ? "Twitch" : "Kick");
+        if (osk_input(prompt, "", name, sizeof(name)) != 1 || !name[0]) return;
+        urlenc(name, enc, sizeof(enc));
+        snprintf(path, sizeof(path), "/t/channel/add/%s/%s", plat, enc);
+        act("POST", path, 10, "Adding the channel");
+    }
+    g_want_sel = -1;
+    load_lines(S_LIVE, "/t/channels", "Live");
+}
+
 void open_power(void) {
     menu_set(S_POWER, "Power");
     add("Refresh video library", "refresh", 1, 0);
@@ -267,6 +299,7 @@ void select_item(void) {
         act("POST", path, 30, it->label);
         break;
     case S_LIVE:
+        if (it->tag[0] == '+' || it->tag[0] == '-') { live_edit(it->tag); break; }
         snprintf(path, sizeof(path), "/t/live/%s/%s", it->tag, it->label);
         act("POST", path, 40, it->label);
         break;

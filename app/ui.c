@@ -127,7 +127,7 @@ void draw_frame(void) {
             rect(6, y, SCR_W - 12, rh - 2, idx == g_sel ? C_SEL : C_ROW);
             Item *it = &g_items[idx];
             float x = 16;
-            if (g_screen == S_LIVE) {
+            if (g_screen == S_LIVE && it->tag[0] != '+' && it->tag[0] != '-') {      /* '+' and '-' are the add and remove rows, not channels */
                 rect(12, y + 8, 8, 8, it->flag == 1 ? C_LIVE : RGB(70, 76, 96));
                 x = 28;
                 snprintf(b, sizeof(b), "%s", it->tag[0] == 't' ? "TW" : "KK");

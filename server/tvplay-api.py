@@ -26,6 +26,7 @@ Prefix any path with /t/ for a plain-text reply (the PSP client uses these): lis
   POST /random/<show>     tvplay random <show>        (bobs house koth rick)
   POST /order/<show>      tvplay order <show>         (bobs house koth rick firefly)
   POST /live/<platform>/<name>   tvplay twitch|kick <name>, only for names in channels.txt
+  POST /channel/add|remove/<platform>/<name>   edit channels.txt from the PSP (comments and other lines are kept)
   POST /fav/<channelid>   play that IPTV favourite, only ids in the Favourites group
   POST /goto/<pos>        jump to a queue position
   POST /stop | /sleep/<1-300|off>
@@ -128,6 +129,44 @@ def channels():
     except OSError:
         pass
     return out
+
+
+CH_LOCK = threading.Lock()
+
+
+def edit_channels(action, plat, name):
+    """Add or remove one 'platform:name' line in channels.txt, leaving comments and other lines alone. Returns (code, message)."""
+    plat, name = plat.lower(), name.strip().lstrip("@").lower()
+    if plat not in PLAT or not NAME_RE.match(name):
+        return 400, "channel names are 2 to 25 letters, digits or underscores"
+    with CH_LOCK:
+        try:
+            lines = open(CHANNELS_FILE).read().split("\n")
+        except OSError:
+            lines = ["# PSP remote Live list: one platform:name per line (twitch or kick). Edited from the PSP or by hand."]
+        want = f"{plat}:{name}"
+        have = [i for i, l in enumerate(lines) if l.split("#")[0].strip().lower().replace(" ", "") == want]
+        if action == "add":
+            if have:
+                return 200, f"{want} is already in the list"
+            if len(channels()) >= 60:
+                return 400, "the list is full (60 channels)"
+            while lines and not lines[-1].strip():
+                lines.pop()
+            lines.append(want)
+        else:
+            if not have:
+                return 404, f"{want} is not in the list"
+            lines = [l for i, l in enumerate(lines) if i not in have]
+        os.makedirs(os.path.dirname(CHANNELS_FILE), exist_ok=True)
+        tmp = CHANNELS_FILE + ".tmp"
+        open(tmp, "w").write("\n".join(lines).rstrip("\n") + "\n")
+        os.replace(tmp, CHANNELS_FILE)
+    if action == "remove":
+        LIVE.pop((plat, name), None)
+    else:
+        threading.Thread(target=lambda: LIVE.__setitem__((plat, name), check_live((plat, name))), daemon=True).start()
+    return 200, f"{want} {'added' if action == 'add' else 'removed'}"
 
 
 def check_live(pn):
@@ -835,6 +874,12 @@ class H(BaseHTTPRequestHandler):
             return self.send(*run_tvplay("random", SHOWS[arg]))
         if v == "order" and arg in SHOWS:
             return self.send(*run_tvplay("order", SHOWS[arg]))
+        if v == "channel" and arg in ("add", "remove") and arg2 in PLAT:
+            name = urllib.parse.unquote(parts[3]) if len(parts) > 3 else ""
+            if DRY:
+                return self.send(200, {"dry_run": True, "would_call": f"channels {arg} {arg2}:{name}"})
+            code, msg = edit_channels(arg, arg2, name)
+            return self.send(code, {"result": "OK" if code == 200 else "error", "message": msg} if code == 200 else {"error": msg})
         if v == "live" and arg in PLAT and (arg, arg2.lower()) in channels():
             global LAST_LIVE
             code, res = run_tvplay(arg, arg2.lower())
