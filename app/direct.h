@@ -4,7 +4,7 @@
 #ifndef DIRECT_H
 #define DIRECT_H
 
-enum { DK_PLAIN = 1, DK_STATUS, DK_VOL, DK_MUTE, DK_QUEUE, DK_FULL, DK_BATCH, DK_TRACKS };
+enum { DK_PLAIN = 1, DK_STATUS, DK_VOL, DK_MUTE, DK_QUEUE, DK_FULL, DK_BATCH, DK_TRACKS, DK_LIB_MOVIES, DK_LIB_SHOWS, DK_LIB_SEASONS, DK_LIB_EPS, DK_LIB_CONT, DK_LIB_RECENT };
 
 /* method/path as the UI uses them ("POST", "/t/key/up"). Writes the JSON-RPC body and the reply kind.
  * Returns 0, or -1 when Kodi alone cannot do it (shows, live channels, favourites, sleep timer need the server). */

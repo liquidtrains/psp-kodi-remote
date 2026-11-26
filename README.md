@@ -1,8 +1,8 @@
 # Kodi Remote for PSP
 
-A PSP homebrew (EBOOT) that controls Kodi over Wi-Fi. It has a dark graphical interface, a now-playing bar with progress, a volume bar, and menus for the play queue, audio and subtitle tracks, typing into Kodi, power actions, IPTV favourites and a sleep timer. A bridge server adds live Twitch and Kick channels and random or in-order episodes.
+A PSP homebrew (EBOOT) that controls Kodi over Wi-Fi. It has a dark graphical interface, a now-playing bar with progress, a volume bar, and menus for browsing your Kodi video library (continue watching, recently added, movies, TV shows by season), the play queue, audio and subtitle tracks, typing into Kodi, power actions and settings. A bridge server adds seek, shuffle and repeat, live Twitch and Kick channels, random or in-order episodes, IPTV favourites, a sleep timer and queue undo.
 
-Version 0.3.0. Tested on a PSP-3000 running ARK-4 (6.61) in infrastructure mode, against Kodi 21 (LibreELEC). It is written for one person's setup, so read "What you need" first.
+Version 0.4.0. Tested on a PSP-3000 running ARK-4 (6.61) in infrastructure mode, against Kodi 21 (LibreELEC). It is written for one person's setup, so read "What you need" first.
 
 ## Two ways to connect
 
@@ -10,9 +10,9 @@ Version 0.3.0. Tested on a PSP-3000 running ARK-4 (6.61) in infrastructure mode,
 |---|---|---|
 | Needs | the small bridge server (`server/tvplay-api.py`) on a machine on your LAN | nothing but Kodi |
 | Kodi's web password | stays on the server | typed on the PSP, saved on the card |
-| Gives you | everything below, including live channels, episodes, queue undo and restore | keys, volume, play and pause, stop, fullscreen, queue (move, remove, play next), audio and subtitles, typing, power actions, sleep timer |
+| Gives you | everything in the Kodi-alone column plus seek, shuffle and repeat, live channels, episodes, IPTV favourites, a sleep timer, queue undo and restore | keys, volume, play and pause, stop, fullscreen, library browsing, queue (move, remove, clear, play next, add), audio and subtitles, typing, power actions, settings |
 
-The app starts in server mode when `config.txt` has a token and in Kodi-alone mode otherwise, or as `mode=server` or `mode=direct` says. In Kodi-alone mode the app can scan your network for Kodi and asks for the login. Full setup for both: [docs/SETUP.md](docs/SETUP.md).
+Both modes browse the library: Continue watching, Recently added, Movies, and TV shows by season, with Play now, Play next and Add to queue, and a row that adds a whole season. The app starts in server mode when `config.txt` has a token and in Kodi-alone mode otherwise, or as `mode=server` or `mode=direct` says. In Kodi-alone mode the app can scan your network for Kodi and asks for the login. Full setup for both: [docs/SETUP.md](docs/SETUP.md).
 
 ```
 server mode:  PSP --HTTP, X-Token--> server/tvplay-api.py --JSON-RPC--> Kodi
@@ -56,11 +56,11 @@ Kodi alone:   PSP --HTTP, Basic auth--> Kodi web server (JSON-RPC)
 | START / SELECT | choose / back in the PSP menus |
 | L + R together | Menu mode: d-pad, X, O drive the PSP menus |
 
-The music-note button cannot be read from a normal EBOOT (the system keeps it), which is why fullscreen is on a Square hold.
+The music-note button cannot be read from a normal EBOOT (the system keeps it), which is why fullscreen is on a Square hold. On ARK-4 an optional build (`make ARK_EXTRAS=1`, see docs/SETUP.md) reads it, and also blanks the screen after 30 seconds idle; that build does not load on other firmware, so the released EBOOT is built without it.
 
 ## Menus
 
-Queue (move, remove, play next, and in server mode undo and restore from snapshots), Audio and subtitles, Type text into Kodi, Settings (edit the connection on the PSP), Power (refresh library, restart Kodi, reboot or shut down the Kodi machine, each asking for START twice), Sleep timer, and in server mode Shows, Live and IPTV favourites.
+Library (both modes), Queue (move, remove, clear, play next, add, and in server mode undo and restore from snapshots), Audio and subtitles, Type text into Kodi, Settings (edit the connection on the PSP), Power (refresh library, restart Kodi, reboot or shut down the Kodi machine, each asking for START twice), and in server mode Seek / shuffle / repeat, Shows, Live (with stream titles, refreshing itself), IPTV favourites and the sleep timer.
 
 ## Server
 
@@ -75,6 +75,7 @@ Plain HTTP with a shared token (server mode) or Basic auth (Kodi alone): home LA
 - Written and tested on one PSP and one Kodi 21 box. Text on screen is Latin only, in the PSP's font.
 - The Kodi-alone network scan covers one /24 and port 8080; otherwise type the address.
 - Server mode needs the server reachable from the PSP's Wi-Fi network.
+- Kodi alone has no undo for a queue add, and no live channels, seek, shuffle or repeat (those need the server).
 
 ## Credits and licence
 

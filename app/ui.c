@@ -1,6 +1,15 @@
 #include "app.h"
 
-unsigned int __attribute__((aligned(16))) g_list[262144];
+unsigned int __attribute__((aligned(16))) g_list[LIST_WORDS];
+
+/* sceGuFinish returns the bytes the frame wrote; keep the peak and note in the log each time it passes another 16 KB, so the size can be judged from real use */
+int list_finish(void) {
+    static int peak, noted;
+    int sz = sceGuFinish();
+    if (sz > peak) peak = sz;
+    if (peak / 16384 > noted) { char m[60]; noted = peak / 16384; snprintf(m, sizeof(m), "display list peak %d bytes of %d", peak, (int)sizeof(g_list)); logf_("%s", m); }
+    return sz;
+}
 
 intraFont *g_font;
 
@@ -69,11 +78,15 @@ char g_dbg[64] = "";
 
 void toast(unsigned int col, const char *msg) { strncpy(g_toast, msg, sizeof(g_toast) - 1); g_toast_col = col; g_toast_frames = 200; }
 
+static void fmt_time(char *o, int sz, int sec) {
+    if (sec >= 3600) snprintf(o, sz, "%d:%02d:%02d", sec / 3600, sec % 3600 / 60, sec % 60);
+    else snprintf(o, sz, "%d:%02d", sec / 60, sec % 60);
+}
+
 void draw_frame(void) {
     Stat s = g_stat[g_cur];
     char b[160];
     int i;
-    g_frame++;
     sceGuStart(GU_DIRECT, g_list);
     sceGuClearColor(C_BG);
     sceGuClear(GU_COLOR_BUFFER_BIT);
@@ -118,15 +131,19 @@ void draw_frame(void) {
                 rect(12, y + 8, 8, 8, it->flag == 1 ? C_LIVE : RGB(70, 76, 96));
                 x = 28;
                 snprintf(b, sizeof(b), "%s", it->tag[0] == 't' ? "TW" : "KK");
-                text(SCR_W - 52, y + 17, 0.75f, it->flag == 1 ? C_LIVE : C_DIM, it->flag == 1 ? "LIVE" : b);
+                { char key[48]; const Stat *ps = &g_stat[g_cur]; int now;
+                  snprintf(key, sizeof(key), "%s/%s", it->tag, it->label);
+                  now = ps->ok && ps->playing && ps->live[0] && !strcmp(key, ps->live);
+                  text(SCR_W - 52, y + 17, 0.75f, now ? C_OK : (it->flag == 1 ? C_LIVE : C_DIM), now ? "NOW" : (it->flag == 1 ? "LIVE" : b)); }
                 if (it->sub[0]) text_fit(178, y + 17, 0.7f, idx == g_sel ? RGB(220, 226, 240) : C_DIM, it->sub, SCR_W - 178 - 58);   /* stream title */
             }
             if ((g_screen == S_QUEUE || g_screen == S_TRACKS) && it->flag == 1) { rect(12, y + 8, 8, 8, C_OK); x = 28; }
+            if (g_screen == S_LIB && it->flag == 2) { rect(12, y + 8, 8, 8, C_ACC); x = 28; }                  /* partly watched */
             /* selection is shown with TEXT (yellow, larger, ">" marker) so it stays visible even if the row bars do not draw */
-            int red = g_screen == S_POWER && it->flag == 2;                 /* shutdown and reboot are drawn red */
+            int red = (g_screen == S_POWER || g_screen == S_QACT) && it->flag == 2;                 /* shutdown and reboot are drawn red */
             if (idx == g_sel) text(3, y + 18, 1.0f, red ? RGB(255, 130, 120) : RGB(255, 214, 64), ">");
             text_fit(x + (idx == g_sel ? 4 : 0), y + 17, idx == g_sel ? 1.0f : 0.85f,
-                     red ? (idx == g_sel ? RGB(255, 130, 120) : C_ERR) : (idx == g_sel ? RGB(255, 214, 64) : (g_screen == S_LIVE && it->flag != 1 ? C_DIM : RGB(176, 184, 204))),
+                     red ? (idx == g_sel ? RGB(255, 130, 120) : C_ERR) : (idx == g_sel ? RGB(255, 214, 64) : (((g_screen == S_LIVE && it->flag != 1) || (g_screen == S_LIB && it->flag == 1)) ? C_DIM : RGB(176, 184, 204))),
                      it->label, (g_screen == S_LIVE && it->sub[0]) ? 140 : SCR_W - x - 70);
         }
         if (g_n > rows) {
@@ -140,7 +157,7 @@ void draw_frame(void) {
         rect(0, 196, SCR_W, 26, RGB(10, 12, 18));
         rect(0, 196, 4, 26, g_toast_col);
         text_fit(12, 214, 0.85f, g_toast_col, g_toast, SCR_W - 24);
-        g_toast_frames--;
+        { static unsigned last_f; unsigned dt = g_frame - last_f; last_f = g_frame; g_toast_frames -= dt < 1 ? 1 : (dt > 30 ? 30 : (int)dt); }   /* counts 60 per second at any draw rate */
     }
 
     /* now playing strip */
@@ -155,8 +172,18 @@ void draw_frame(void) {
     } else {
         text_fit(10, 247, 0.8f, C_ERR, s.err[0] ? s.err : "connecting...", SCR_W - 20);
     }
+    if (s.ok && s.playing) {                           /* elapsed / total, and the shuffle and repeat state */
+        char a[16], t[16], line[80];
+        int n = 0;
+        line[0] = 0;
+        if (s.total > 0) { fmt_time(a, sizeof(a), s.time); fmt_time(t, sizeof(t), s.total); n = snprintf(line, sizeof(line), "%s / %s", a, t); }
+        else if (s.time > 0) { fmt_time(a, sizeof(a), s.time); n = snprintf(line, sizeof(line), "%s elapsed", a); }   /* a live stream has no total */
+        if (s.shuffled) n += snprintf(line + n, sizeof(line) - n, "%sSHUFFLE", n ? "   " : "");
+        if (s.repeat[0] && strcmp(s.repeat, "off")) n += snprintf(line + n, sizeof(line) - n, "%sREPEAT %s", n ? "   " : "", s.repeat);
+        if (line[0]) text(10, 270, 0.6f, C_DIM, line);
+    }
     text(SCR_W - 250, 270, 0.6f, C_DIM, g_dbg);        /* diagnostic: screen, selected row, buttons */
-    sceGuFinish();
+    list_finish();
     sceGuSync(0, 0);
     sceDisplayWaitVblankStart();
     sceGuSwapBuffers();
@@ -173,7 +200,7 @@ void dlg_begin(void) {
     text(SCR_W - 150, 21, 0.7f, C_DIM, "v" APP_VERSION_STR);          /* version and build, top right of every setup screen */
 }
 
-void dlg_end(void) { sceGuFinish(); sceGuSync(0, 0); sceDisplayWaitVblankStart(); sceGuSwapBuffers(); }
+void dlg_end(void) { list_finish(); sceGuSync(0, 0); sceDisplayWaitVblankStart(); sceGuSwapBuffers(); }
 
 /* a page of text lines; sel >= 0 turns it into a list with a ">" marker on that line */
 void dlg_page(const char *title, const char *const *lines, int n, const char *footer, int sel) {
@@ -259,7 +286,7 @@ int osk_input(const char *desc, const char *init, char *out, int outsz) {
         sceGuClearColor(C_BG);
         sceGuClearDepth(0);
         sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-        sceGuFinish(); sceGuSync(0, 0);
+        list_finish(); sceGuSync(0, 0);
         switch (sceUtilityOskGetStatus()) {
         case PSP_UTILITY_DIALOG_VISIBLE: sceUtilityOskUpdate(1); break;
         case PSP_UTILITY_DIALOG_QUIT: sceUtilityOskShutdownStart(); break;
@@ -291,7 +318,7 @@ int run_netconf(void) {
         sceGuClearColor(C_BG);
         sceGuClearDepth(0);
         sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-        sceGuFinish(); sceGuSync(0, 0);
+        list_finish(); sceGuSync(0, 0);
         switch (sceUtilityNetconfGetStatus()) {
         case PSP_UTILITY_DIALOG_VISIBLE: sceUtilityNetconfUpdate(1); break;
         case PSP_UTILITY_DIALOG_QUIT: sceUtilityNetconfShutdownStart(); break;

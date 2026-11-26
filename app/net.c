@@ -174,7 +174,9 @@ int poll_thread(SceSize args, void *argp) {
     while (1) {
         Stat s;
         memset(&s, 0, sizeof(s));
-        scePowerTick(PSP_POWER_TICK_ALL);                         /* a remote must not auto-suspend, dim or switch the screen off */
+        /* In use: keep everything awake. Idle: only stop the auto-suspend, so the PSP's own Backlight Auto-Off (XMB > Settings > Power Save) can
+         * turn the screen off while Wi-Fi and the remote keep working; any button wakes it. */
+        scePowerTick(idle_seconds() >= IDLE_SLOW_S ? PSP_POWER_TICK_SUSPEND : PSP_POWER_TICK_ALL);
         { int st = 0; sceNetApctlGetState(&st);
           if (g_resumed || st != PSP_NET_APCTL_STATE_GOT_IP || g_fails >= 2) { g_reconnecting = 1; net_reconnect(); g_resumed = 0; g_fails = 0; g_reconnecting = 0; } }
         int code = http("GET", "/t/status", 8, body, sizeof(body));
@@ -190,6 +192,11 @@ int poll_thread(SceSize args, void *argp) {
             { static int last_q = -2, last_p = -2;                         /* Kodi moved on, or the queue changed there: refresh an open queue screen once */
               if (s.qlen != last_q || s.pos != last_p) { if (g_screen == S_QUEUE && !g_grab) g_queue_dirty = 1; last_q = s.qlen; last_p = s.pos; } }
             s.pct = kv(body, "percent", v, sizeof(v)) ? (float)atof(v) : 0;
+            s.time = kv(body, "time", v, sizeof(v)) ? atoi(v) : 0;
+            s.total = kv(body, "total", v, sizeof(v)) ? atoi(v) : 0;
+            s.shuffled = kv(body, "shuffled", v, sizeof(v)) && v[0] == '1';
+            if (kv(body, "repeat", v, sizeof(v))) { strncpy(s.repeat, v, sizeof(s.repeat) - 1); }
+            if (kv(body, "live", v, sizeof(v))) { strncpy(s.live, v, sizeof(s.live) - 1); }
             if (kv(body, "title", v, sizeof(v))) strncpy(s.title, v, sizeof(s.title) - 1);
         } else {
             if (code) snprintf(s.err, sizeof(s.err), "API error %d", code);
@@ -198,7 +205,8 @@ int poll_thread(SceSize args, void *argp) {
         g_stat[1 - g_cur] = s;
         g_cur = 1 - g_cur;
         int i;
-        for (i = 0; i < 40 && !g_poll_now; i++) sceKernelDelayThread(100 * 1000);   /* 4 s, or sooner after an action */
+        { int n = idle_seconds() >= IDLE_SLOW_S ? 100 : 40;                          /* 4 s while in use, 10 s when idle; sooner after an action */
+          for (i = 0; i < n && !g_poll_now; i++) sceKernelDelayThread(100 * 1000); }
         g_poll_now = 0;
     }
     return 0;
@@ -228,7 +236,7 @@ int job_push(const char *method, const char *path, int timeout_s, const char *wh
 int worker_thread(SceSize args, void *argp) {
     char msg[120];
     for (;;) {
-        if (g_jh == g_jt || g_load_ready) { sceKernelDelayThread(30 * 1000); continue; }
+        if (g_jh == g_jt || g_load_ready) { sceKernelDelayThread(idle_seconds() >= IDLE_SLOW_S ? 100 * 1000 : 30 * 1000); continue; }
         Job j = g_jobs[g_jh];
         unsigned t0 = sceKernelGetSystemTimeLow();
         int code = http(j.method, j.path, j.timeout, g_wbuf, sizeof(g_wbuf));

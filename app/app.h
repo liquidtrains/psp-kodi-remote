@@ -53,11 +53,11 @@
 #endif
 #define NJOBS 6
 /* ---------------------------------------------------------------- status poller (own thread) */
-typedef struct { int ok, playing, paused, vol, muted, qlen, pos; float pct; char title[100]; char err[60]; } Stat;
+typedef struct { int ok, playing, paused, vol, muted, qlen, pos, time, total, shuffled; float pct; char title[100]; char err[60]; char repeat[8]; char live[40]; } Stat;
 /* ---------------------------------------------------------------- drawing */
 typedef struct { unsigned int c; float x, y, z; } Vtx;
 /* ---------------------------------------------------------------- UI state */
-enum { S_MAIN, S_SHOWS, S_LIVE, S_FAVS, S_QUEUE, S_SLEEP, S_REMOTE, S_QACT, S_TRACKS, S_POWER, S_SETTINGS };
+enum { S_MAIN, S_SHOWS, S_LIVE, S_FAVS, S_QUEUE, S_SLEEP, S_REMOTE, S_QACT, S_TRACKS, S_POWER, S_SETTINGS, S_PLAY, S_LIB, S_LACT };
 typedef struct { char label[72]; char tag[12]; char sub[64]; int id; int flag; } Item;
 /* ---------------------------------------------------------------- menus */
 /* Every network request runs on this worker thread, so a hung Kodi or API never freezes the PSP menus (scrolling, paging, back). */
@@ -95,7 +95,23 @@ extern unsigned g_stop_armed;   /* config.c */
 extern Stat g_stat[2];   /* net.c */
 extern volatile int g_cur;   /* net.c */
 extern volatile int g_poll_now;   /* net.c */
-extern unsigned int __attribute__((aligned(16))) g_list[262144];   /* ui.c */
+extern volatile unsigned long long g_last_input;   /* config.c: system time (us) of the last button or stick use */
+int idle_seconds(void);   /* config.c */
+void crumb(const char *msg);   /* config.c: ARK-extras flavor writes it to boot.txt, others ignore it */
+#define BLANK_S 30              /* kernel flavor: seconds without input before the screen goes black */
+#define KMASK (0xFFFFu | 0x10000u | 0x100000u | 0x200000u | 0x400000u | 0x800000u)   /* normal buttons plus HOME, VOL+, VOL-, SCREEN, NOTE (not the HOLD and WLAN switches) */
+extern volatile int g_blanked;   /* sys.c */
+extern volatile int g_ark_ok;   /* sys.c: ARK kernel calls available (ARK-extras flavor) */
+int ark_init(void);   /* sys.c */
+int ark_get_brightness(void);   /* sys.c */
+extern int g_dark_level;   /* sys.c */
+unsigned ark_buttons(void);   /* sys.c */
+void screen_blank(void);   /* sys.c: kernel flavor only */
+void screen_restore(void);   /* sys.c */
+#define IDLE_SLOW_S 20          /* after this long without input the app draws only when something changed */
+#define LIST_WORDS 32768      /* the GU display list: 128 KB. It was 1 MB, which a kernel module cannot load and which counted as app memory. */
+extern unsigned int __attribute__((aligned(16))) g_list[LIST_WORDS];   /* ui.c */
+int list_finish(void);   /* ui.c: sceGuFinish plus a check of how much of the list one frame used */
 extern intraFont * g_font;   /* ui.c */
 extern Item g_items[128];   /* menus.c */
 extern int g_n;   /* menus.c */
@@ -149,6 +165,15 @@ void parse_lines(int screen, int code);   /* menus.c */
 void open_main(void);   /* menus.c */
 void open_shows(void);   /* menus.c */
 void open_sleep(void);   /* menus.c */
+void open_play(void);   /* menus.c */
+void add(const char *label, const char *tag, int id, int flag);   /* menus.c */
+void open_main(void);   /* menus.c */
+void lib_open_root(void);   /* lib.c */
+void lib_back(void);   /* lib.c */
+void lib_actions_back(void);   /* lib.c */
+void lib_select(Item *it);   /* lib.c */
+void lib_act(Item *it);   /* lib.c */
+extern char g_live_keep[72];   /* menus.c: the Live row to keep selected across a refresh */
 int act(const char *method, const char *path, int timeout_s, const char *what);   /* net.c */
 void open_qact(const Item *it);   /* menus.c */
 void select_item(void);   /* menus.c */

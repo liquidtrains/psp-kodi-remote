@@ -3,6 +3,7 @@
 Item g_items[128];
 
 int g_n, g_sel, g_scroll, g_screen = S_MAIN;
+char g_live_keep[72];
 
 void add(const char *label, const char *tag, int id, int flag) {
     if (g_n >= 128) return;
@@ -19,8 +20,17 @@ void load_lines(int screen, const char *path, const char *title) {
     job_push("GET", path, 20, "load", screen + 1);
 }
 
+static void builtin_shows(void) {                 /* used when the server has no show list to give */
+    add("Bob's Burgers - random", "bobs", 0, 0);
+    add("House - random", "house", 1, 0);
+    add("King of the Hill - random", "koth", 2, 0);
+    add("Rick and Morty - random", "rick", 3, 0);
+    add("Firefly - in order", "firefly", 4, 0);
+}
+
 void parse_lines(int screen, int code) {
     char *p;
+    if (screen == S_SHOWS && code != 200) { g_n = 0; builtin_shows(); toast(C_DIM, "Built-in show list"); return; }
     if (code != 200) { toast(C_ERR, (code && !g_wbuf[0]) ? "API error" : g_wbuf); g_toast_frames = 300; return; }
     g_toast_frames = 0;
     if (screen == S_QUEUE || screen == S_TRACKS) g_n = 0;      /* a refresh re-reads the whole list in place */
@@ -32,11 +42,26 @@ void parse_lines(int screen, int code) {
         if (screen == S_LIVE) {                       /* platform|name|live */
             char *a = p, *b = strchr(a, '|'), *c = b ? strchr(b + 1, '|') : NULL;
             if (b && c) {
-                char *t = strchr(c + 1, '|');
-                *b = 0; *c = 0; if (t) *t = 0;
+                char *t = strchr(c + 1, '|'), *cat = t ? strchr(t + 1, '|') : NULL;
+                *b = 0; *c = 0; if (t) *t = 0; if (cat) *cat = 0;
                 add(b + 1, a, 0, c[1] == '1' ? 1 : 0);
-                if (t) { strncpy(g_items[g_n - 1].sub, t + 1, 63); g_items[g_n - 1].sub[63] = 0; }
+                if (t) {                                       /* "category: title", the category cut short so the title still shows */
+                    int has_cat = cat && cat[1];
+                    snprintf(g_items[g_n - 1].sub, sizeof(g_items[0].sub), "%.14s%s%s", has_cat ? cat + 1 : "", has_cat && t[1] ? ": " : "", t + 1);
+                }
             }
+        } else if (screen == S_LIB) {                 /* kind|id|label|flag|extra */
+            char *f[5] = { p, NULL, NULL, NULL, NULL };
+            int k;
+            for (k = 1; k < 5; k++) { char *b = f[k - 1] ? strchr(f[k - 1], '|') : NULL; if (b) { *b = 0; f[k] = b + 1; } }
+            if (f[3] && f[2]) {
+                char tag[12];
+                snprintf(tag, sizeof(tag), "%c%.10s", f[0][0], f[4] ? f[4] : "");
+                add(f[2], tag, atoi(f[1]), atoi(f[3]));
+            }
+        } else if (screen == S_SHOWS) {               /* r|key|label (random) or o|key|label (in order) */
+            char *k = strchr(p, '|'), *l = k ? strchr(k + 1, '|') : NULL;
+            if (l) { *k = 0; *l = 0; add(l + 1, k + 1, p[0] == 'o' ? 4 : 0, 0); }
         } else if (screen == S_FAVS) {                /* id|name */
             char *b = strchr(p, '|');
             if (b) { *b = 0; add(b + 1, "", atoi(p), 0); }
@@ -61,6 +86,15 @@ void parse_lines(int screen, int code) {
         for (i = 0; i < g_n; i++) if (g_items[i].flag != 1) tmp[n++] = g_items[i];
         memcpy(g_items, tmp, sizeof(Item) * n);
     }
+    if (screen == S_LIB && g_want_sel >= 0) { g_sel = g_want_sel < g_n ? g_want_sel : (g_n ? g_n - 1 : 0); g_want_sel = -1; g_scroll = g_sel >= 8 ? g_sel - 4 : 0; }
+    if (screen == S_LIVE && g_live_keep[0]) {          /* a refresh in place: keep the cursor on the same channel */
+        int i;
+        for (i = 0; i < g_n; i++) if (!strcmp(g_items[i].label, g_live_keep)) { g_sel = i; break; }
+        g_live_keep[0] = 0;
+        if (g_sel >= g_n) g_sel = g_n ? g_n - 1 : 0;
+        if (g_sel < g_scroll) g_scroll = g_sel;
+        if (g_sel >= g_scroll + 8) g_scroll = g_sel - 7;
+    }
     if (screen == S_QUEUE) { int i; g_qcur = -1; g_qn = g_n; for (i = 0; i < g_n; i++) if (g_items[i].id == g_sel) { g_items[i].flag = 1; g_qcur = g_items[i].id; }
         if (g_want_sel >= 0) { g_sel = g_want_sel < g_n ? g_want_sel : g_n - 1; if (g_sel < 0) g_sel = 0; g_want_sel = -1; g_scroll = g_sel >= 8 ? g_sel - 4 : 0; }
         if (g_sel >= 8 && g_scroll == 0) g_scroll = g_sel - 3; if (g_scroll > g_n - 8) g_scroll = g_n > 8 ? g_n - 8 : 0; }
@@ -71,6 +105,7 @@ void open_main(void) {
     if (g_direct) {                                   /* what plain Kodi can do, no server needed */
         add("Show video fullscreen", "", 8, 0);
         add("Queue", "", 4, 0);
+        add("Library: continue, movies, TV shows", "", 50, 0);
         add("Kodi home screen", "", 9, 0);
         add("Mute / unmute", "", 10, 0);
         add("Next item", "", 11, 0);
@@ -88,6 +123,8 @@ void open_main(void) {
     add("Live: Twitch and Kick", "", 2, 0);
     add("TV favourites (IPTV)", "", 3, 0);
     add("Queue", "", 4, 0);
+    add("Library: continue, movies, TV shows", "", 50, 0);
+    add("Seek, shuffle, repeat", "", 40, 0);
     add("Audio and subtitles", "", 30, 0);
     add("Show video fullscreen", "", 8, 0);
     add("Sleep timer", "", 5, 0);
@@ -98,13 +135,18 @@ void open_main(void) {
     add("Stop playback", "", 7, 0);
 }
 
-void open_shows(void) {
-    menu_set(S_SHOWS, "Shows");
-    add("Bob's Burgers - random", "bobs", 0, 0);
-    add("House - random", "house", 1, 0);
-    add("King of the Hill - random", "koth", 2, 0);
-    add("Rick and Morty - random", "rick", 3, 0);
-    add("Firefly - in order", "firefly", 4, 0);
+void open_shows(void) {                           /* the list comes from the server (shows.txt there); parse_lines falls back to the built-in one */
+    load_lines(S_SHOWS, "/t/showlist", "Shows");
+}
+
+void open_play(void) {
+    menu_set(S_PLAY, "Seek and playback");
+    add("Back 10 minutes", "d", -600, 0); add("Back 1 minute", "d", -60, 0); add("Back 30 seconds", "d", -30, 0);
+    add("Forward 30 seconds", "d", 30, 0); add("Forward 1 minute", "d", 60, 0); add("Forward 10 minutes", "d", 600, 0);
+    add("Jump to the start", "p", 0, 0); add("Jump to 25%", "p", 25, 0); add("Jump to 50%", "p", 50, 0);
+    add("Jump to 75%", "p", 75, 0); add("Jump to 90%", "p", 90, 0);
+    add("Shuffle on / off", "s", 0, 0);
+    add("Repeat: off, all, one", "r", 0, 0);
 }
 
 void open_sleep(void) {
@@ -123,9 +165,12 @@ void open_qact(const Item *it) {
     add("Move down", "", 4, 0);
     add("Move to the end", "", 5, 0);
     add("Remove from queue", "", 6, 0);
-    if (!g_direct) {                                   /* these two need the server, which keeps the snapshots */
+    add("Clear all but the playing item", "", 10, 2);
+    add("Clear the whole queue (stops playback)", "", 11, 2);
+    if (!g_direct) {                                   /* these need the server, which keeps the snapshots */
         add("Undo the last queue change", "", 8, 0);
         add("Restore the queue from a snapshot", "", 9, 0);
+        add("Bring back the queue from before the clear", "", 12, 0);
     }
 }
 
@@ -206,6 +251,8 @@ void select_item(void) {
         else if (it->id == 12) act("POST", "/t/do/prev", 8, "Previous item");
         else if (it->id == 13) { if (direct_find()) toast(C_OK, "Connected to Kodi"); }
         else if (it->id == 30) load_lines(S_TRACKS, "/t/tracks", "Audio and subtitles");
+        else if (it->id == 40) open_play();
+        else if (it->id == 50) lib_open_root();
         else if (it->id == 31) type_text();
         else if (it->id == 32) open_power();
         else if (it->id == 33) open_settings();
@@ -230,6 +277,14 @@ void select_item(void) {
     case S_QUEUE:
         if (g_grab) { g_grab = 0; g_want_sel = g_sel; load_lines(S_QUEUE, "/t/queue", "Queue"); toast(C_OK, "Dropped"); break; }
         open_qact(it);                                /* START on a queue item: choose what to do with it */
+        break;
+    case S_LIB: lib_select(it); break;
+    case S_LACT: lib_act(it); break;
+    case S_PLAY:
+        if (it->tag[0] == 'd') snprintf(path, sizeof(path), "/t/seek/%d", it->id);
+        else if (it->tag[0] == 'p') snprintf(path, sizeof(path), "/t/seek/pct/%d", it->id);
+        else snprintf(path, sizeof(path), "%s", it->tag[0] == 's' ? "/t/shuffle" : "/t/repeat");
+        act("POST", path, 15, it->label);
         break;
     case S_TRACKS:
         snprintf(path, sizeof(path), "/t/track/%s/%s", it->tag, it->id < 0 ? "off" : "0");
@@ -293,6 +348,23 @@ void select_item(void) {
             act("POST", path, 20, "Removing");
             want = pos < n - 1 ? pos : n - 2;
             break;
+        case 10: case 11: {                                /* destructive: START twice within 5 s, like the power menu */
+            static int armed; static unsigned armed_at;
+            if (armed == it->id && g_frame - armed_at < 300) {
+                armed = 0;
+                if (it->id == 11) snprintf(path, sizeof(path), "/t/q/clear/all");
+                else snprintf(path, sizeof(path), "/t/q/clear/keep/%d/%d", g_stat[g_cur].playing ? g_stat[g_cur].pos : -1, g_qn);
+                act("POST", path, 30, it->id == 11 ? "Clearing the queue" : "Clearing all but the playing item");
+                want = 0;                                  /* the common tail below reloads the queue screen */
+            } else {
+                armed = it->id; armed_at = g_frame;
+                snprintf(dbg, sizeof(dbg), g_direct ? "Press START again to clear (cannot be undone here)" : "Press START again to clear (restorable)");
+                toast(C_ERR, dbg);
+                return;                                    /* stay on this menu so the second press can arrive */
+            }
+            break;
+        }
+        case 12: act("POST", "/t/q/restore/clear", 40, "Restoring the queue"); want = 0; break;
         case 8: act("POST", "/t/q/undo", 20, "Undoing"); break;
         case 9: act("POST", "/t/q/restore", 30, "Restoring the queue"); break;
         case 7:                                       /* grab: the stick now moves this item */

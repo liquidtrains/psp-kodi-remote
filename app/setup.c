@@ -13,10 +13,12 @@ void direct_wifi(void) {
     sceNetInetInit();
     sceNetApctlInit(0x8000, 48);
     prof = profile_for(g_ssid);
+    { char m[80]; snprintf(m, sizeof(m), "wifi: saved profile %d for the saved network name", prof); logf_("%s", m); }
     if (prof > 0) {
         g_prof = prof;
         sceNetApctlConnect(prof);
-        if (wait_ip(20000, "Joining the saved Wi-Fi network...")) return;
+        if (wait_ip(20000, "Joining the saved Wi-Fi network...")) { logf_("%s", "wifi: joined the saved network"); return; }
+        logf_("%s", "wifi: the saved network did not come up in 20 s");
         sceNetApctlDisconnect();
     }
     if (!dlg_choice("Connect to Wi-Fi", pick, 6, "X  Choose a network      O  Close the app", PSP_CTRL_CROSS, PSP_CTRL_CIRCLE)) sceKernelExitGame();
@@ -186,9 +188,13 @@ int direct_find(void) {
 /* the boot sequence of Kodi-alone mode: Wi-Fi, then the saved Kodi, else find one */
 void direct_boot(void) {
     load_direct();
+    logf_("%s", g_dhost[0] ? "direct: a Kodi address is saved on the card" : "direct: no Kodi address saved yet");
     direct_wifi();
+    logf_("%s", "direct: Wi-Fi step done");
     if (g_dhost[0]) {
-        if (probe_host(g_dhost, g_dport, g_duser, g_dpass) == 1) return;                 /* the saved Kodi is there */
+        int pr = probe_host(g_dhost, g_dport, g_duser, g_dpass);
+        { char m[60]; snprintf(m, sizeof(m), "direct: saved Kodi answered with %d (1 = logged in)", pr); logf_("%s", m); }
+        if (pr == 1) return;                                                             /* the saved Kodi is there */
         {
             char l2[70];
             const char *l[] = { "The Kodi saved on the card did not answer:", l2, "", "It may be switched off, or its address changed.", "", "X  looks for Kodi again.", "O  keeps the saved address and carries on." };
@@ -196,5 +202,7 @@ void direct_boot(void) {
             if (!dlg_choice("Kodi not found", l, 7, "X  Find Kodi      O  Use the saved address", PSP_CTRL_CROSS, PSP_CTRL_CIRCLE)) return;
         }
     }
-    if (!direct_find()) sceKernelExitGame();
+    logf_("%s", "direct: looking for Kodi (scan or typed address)");
+    if (!direct_find()) { logf_("%s", "direct: gave up, closing"); sceKernelExitGame(); }
+    logf_("%s", "direct: Kodi found and logged in");
 }

@@ -120,6 +120,94 @@ static void one(char *body, int bodysz, const char *method, const char *params) 
     else snprintf(body, bodysz, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\"}", method);
 }
 
+
+/* ------------------------------------------------------------ library (the same lists tvplay-api gives in server mode) */
+#define LIB_PAGE 40
+static int g_lib_show, g_lib_season;                                /* set by the request, used by the reply that follows it (one request at a time) */
+static const char SORT_LABEL[] = "\"sort\":{\"method\":\"label\",\"order\":\"ascending\"}";
+static const char FILT_PROGRESS[] = "\"filter\":{\"field\":\"inprogress\",\"operator\":\"true\",\"value\":\"\"}";
+
+static int item_json(char *out, int outsz, char k, int id) {         /* {"movieid":N} or {"episodeid":N} */
+    if (k != 'm' && k != 'e') return -1;
+    snprintf(out, outsz, "{\"%s\":%d}", k == 'm' ? "movieid" : "episodeid", id);
+    return 0;
+}
+
+static int lib_request(const char *arg, char *body, int bodysz, int *kind) {
+    int a = 0, b = 0, c = 0, id = 0;
+    char k = 0, item[40], params[400];
+    if (!strcmp(arg, "movies") || sscanf(arg, "movies/%d", &a) == 1) {
+        *kind = DK_LIB_MOVIES;
+        if (a < 0 || a > 500) return -1;
+        snprintf(params, sizeof(params), "{\"properties\":[\"year\",\"playcount\",\"resume\"],%s,\"limits\":{\"start\":%d,\"end\":%d}}", SORT_LABEL, a * LIB_PAGE, a * LIB_PAGE + LIB_PAGE);
+        one(body, bodysz, "VideoLibrary.GetMovies", params);
+        return 0;
+    }
+    if (!strcmp(arg, "shows") || sscanf(arg, "shows/%d", &a) == 1) {
+        *kind = DK_LIB_SHOWS;
+        if (a < 0 || a > 500) return -1;
+        snprintf(params, sizeof(params), "{\"properties\":[\"episode\",\"watchedepisodes\"],%s,\"limits\":{\"start\":%d,\"end\":%d}}", SORT_LABEL, a * LIB_PAGE, a * LIB_PAGE + LIB_PAGE);
+        one(body, bodysz, "VideoLibrary.GetTVShows", params);
+        return 0;
+    }
+    if (sscanf(arg, "seasons/%d", &a) == 1 && a > 0) {
+        *kind = DK_LIB_SEASONS;
+        g_lib_show = a;
+        snprintf(params, sizeof(params), "{\"tvshowid\":%d,\"properties\":[\"season\",\"episode\",\"watchedepisodes\"]}", a);
+        one(body, bodysz, "VideoLibrary.GetSeasons", params);
+        return 0;
+    }
+    if (sscanf(arg, "eps/%d/%d", &a, &b) == 2 && a > 0 && b >= 0) {
+        *kind = DK_LIB_EPS;
+        g_lib_show = a; g_lib_season = b;
+        snprintf(params, sizeof(params), "{\"tvshowid\":%d,\"season\":%d,\"properties\":[\"title\",\"season\",\"episode\",\"playcount\",\"resume\"],"
+                 "\"sort\":{\"method\":\"episode\",\"order\":\"ascending\"},\"limits\":{\"start\":0,\"end\":40}}", a, b);
+        one(body, bodysz, "VideoLibrary.GetEpisodes", params);
+        return 0;
+    }
+    if (!strcmp(arg, "continue")) {
+        *kind = DK_LIB_CONT;
+        snprintf(body, bodysz, "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"VideoLibrary.GetEpisodes\",\"params\":{%s,\"properties\":[\"title\",\"showtitle\",\"season\",\"episode\"],\"limits\":{\"start\":0,\"end\":20}}},"
+                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"VideoLibrary.GetMovies\",\"params\":{%s,\"properties\":[\"year\"],\"limits\":{\"start\":0,\"end\":10}}}]", FILT_PROGRESS, FILT_PROGRESS);
+        return 0;
+    }
+    if (!strcmp(arg, "recent")) {
+        *kind = DK_LIB_RECENT;
+        snprintf(body, bodysz, "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"VideoLibrary.GetRecentlyAddedEpisodes\",\"params\":{\"properties\":[\"title\",\"showtitle\",\"season\",\"episode\",\"playcount\",\"resume\"],\"limits\":{\"start\":0,\"end\":20}}},"
+                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"VideoLibrary.GetRecentlyAddedMovies\",\"params\":{\"properties\":[\"year\",\"playcount\",\"resume\"],\"limits\":{\"start\":0,\"end\":10}}}]");
+        return 0;
+    }
+    /* actions. The app knows the position of the playing item and the queue length from its status poll and sends them along:
+     *   add/K/ID   next/K/ID/POS   play/K/ID/POS/QLEN   (POS -1 = nothing playing)   addseason/SHOW/SEASON */
+    *kind = DK_PLAIN;
+    if (sscanf(arg, "add/%c/%d", &k, &id) == 2 && item_json(item, sizeof(item), k, id) == 0) {
+        snprintf(params, sizeof(params), "{\"playlistid\":1,\"item\":%s}", item);
+        one(body, bodysz, "Playlist.Add", params);
+        return 0;
+    }
+    if (sscanf(arg, "next/%c/%d/%d", &k, &id, &a) == 3 && a >= -1 && a < 1000 && item_json(item, sizeof(item), k, id) == 0) {
+        if (a >= 0) snprintf(params, sizeof(params), "{\"playlistid\":1,\"position\":%d,\"item\":%s}", a + 1, item), one(body, bodysz, "Playlist.Insert", params);
+        else snprintf(params, sizeof(params), "{\"playlistid\":1,\"item\":%s}", item), one(body, bodysz, "Playlist.Add", params);
+        return 0;
+    }
+    if (sscanf(arg, "play/%c/%d/%d/%d", &k, &id, &a, &c) == 4 && a >= -1 && a < 1000 && c >= 0 && c < 1000 && item_json(item, sizeof(item), k, id) == 0) {
+        *kind = DK_BATCH;
+        if (a >= 0)                                          /* something is playing: put the item after it and step to it */
+            snprintf(body, bodysz, "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Playlist.Insert\",\"params\":{\"playlistid\":1,\"position\":%d,\"item\":%s}},"
+                     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"Player.GoTo\",\"params\":{\"playerid\":1,\"to\":\"next\"}}]", a + 1, item);
+        else                                                 /* nothing playing: add it at the end and open that position */
+            snprintf(body, bodysz, "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Playlist.Add\",\"params\":{\"playlistid\":1,\"item\":%s}},"
+                     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"Player.Open\",\"params\":{\"item\":{\"playlistid\":1,\"position\":%d}}}]", item, c);
+        return 0;
+    }
+    if (sscanf(arg, "addseason/%d/%d", &a, &b) == 2 && a > 0 && b >= 0) {        /* Kodi's own season folder: every episode, in order */
+        snprintf(params, sizeof(params), "{\"playlistid\":1,\"item\":{\"directory\":\"videodb://tvshows/titles/%d/%d/\"}}", a, b);
+        one(body, bodysz, "Playlist.Add", params);
+        return 0;
+    }
+    return -1;
+}
+
 static const char STATUS_BATCH[] =
     "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"Player.GetActivePlayers\"},"
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"Application.GetProperties\",\"params\":{\"properties\":[\"volume\",\"muted\"]}},"
@@ -158,6 +246,7 @@ int dk_request(const char *method, const char *path, char *body, int bodysz, int
     if (p[n] == '/') { strncpy(arg, p + n + 1, sizeof(arg) - 1); arg[sizeof(arg) - 1] = 0; }
     *kind = DK_PLAIN;
 
+    if (!strcmp(verb, "lib")) return lib_request(arg, body, bodysz, kind);
     if (!strcmp(verb, "tracks")) {
         *kind = DK_TRACKS;
         snprintf(body, bodysz, "%s",
@@ -212,6 +301,21 @@ int dk_request(const char *method, const char *path, char *body, int bodysz, int
             one(body, bodysz, "Playlist.Remove", params);
             return 0;
         }
+        if (!strcmp(arg, "clear/all")) { one(body, bodysz, "Playlist.Clear", "{\"playlistid\":1}"); return 0; }
+        if (sscanf(arg, "clear/keep/%d/%d", &a, &b) == 2 && a >= -1 && a < 128 && b > 0 && b <= 128) {      /* a = playing position or -1, b = queue length */
+            int i, id = 1, len = 0;
+            *kind = DK_BATCH;
+            len += snprintf(body + len, bodysz - len, "[");
+            for (i = b - 1; i >= 0; i--) {
+                if (i == a) continue;
+                if (len > bodysz - 160) return -1;
+                len += snprintf(body + len, bodysz - len, "%s{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"Playlist.Remove\",\"params\":{\"playlistid\":1,\"position\":%d}}", id > 1 ? "," : "", id, i);
+                id++;
+            }
+            if (id == 1) { one(body, bodysz, "JSONRPC.Ping", NULL); return 0; }
+            snprintf(body + len, bodysz - len, "]");
+            return 0;
+        }
         if (sscanf(arg, "move/%d/%d", &a, &b) == 2 && a >= 0 && b >= 0 && a < 128 && b < 128) {
             int i, step = b < a ? -1 : 1, len = 0, id = 1;
             if (a == b) { one(body, bodysz, "JSONRPC.Ping", NULL); return 0; }
@@ -237,6 +341,115 @@ int dk_request(const char *method, const char *path, char *body, int bodysz, int
 }
 
 /* ------------------------------------------------------------ replies */
+
+/* ------------------------------------------------------------ library replies */
+typedef struct { char *out; int outsz, len, force; } LibOut;      /* force > 0: every line gets that flag (Continue watching) */
+
+/* calls fn for each object of the array after "key": inside s..e */
+static void each_obj(const char *s, const char *e, const char *key, void (*fn)(const char *, const char *, LibOut *), LibOut *lo) {
+    const char *p = keyp(s, e, key), *start = NULL;
+    int depth = 0, instr = 0;
+    if (!p || *p != '[') return;
+    for (; p < e; p++) {
+        if (instr) { if (*p == '\\' && p[1]) p++; else if (*p == '"') instr = 0; continue; }
+        if (*p == '"') { instr = 1; continue; }
+        if (*p == '[') depth++;
+        else if (*p == ']') { if (--depth == 0) return; }
+        else if (*p == '{') { if (++depth == 2) start = p; }
+        else if (*p == '}') { if (depth-- == 2 && start) { fn(start, p + 1, lo); start = NULL; } }
+    }
+}
+
+static int num_of(const char *s, const char *e, const char *key) { const char *v = keyp(s, e, key); return v ? atoi(v) : 0; }
+
+static int partly(const char *s, const char *e) {                   /* a resume point past the start */
+    const char *r = keyp(s, e, "resume"), *v;
+    if (!r || *r != '{') return 0;
+    v = keyp(r, e, "position");
+    return v && atof(v) > 0.5;
+}
+
+static void lib_put(LibOut *lo, char kind, int id, const char *label, int flag, const char *extra) {
+    char clean[100];
+    int i;
+    if (lo->len >= lo->outsz - 130) return;
+    snprintf(clean, sizeof(clean), "%s", label);
+    for (i = 0; clean[i]; i++) if (clean[i] == '|') clean[i] = '/';
+    if (lo->force) flag = lo->force;
+    lo->len += snprintf(lo->out + lo->len, lo->outsz - lo->len, "%c|%d|%s|%d|%s\n", kind, id, clean, flag, extra ? extra : "");
+}
+
+static void ob_movie(const char *s, const char *e, LibOut *lo) {
+    char title[80], label[100];
+    const char *t = keyp(s, e, "label");
+    int year = num_of(s, e, "year");
+    if (!t || !jstr(t, e, title, sizeof(title))) return;
+    if (year > 0) snprintf(label, sizeof(label), "%.70s (%d)", title, year); else snprintf(label, sizeof(label), "%s", title);
+    lib_put(lo, 'm', num_of(s, e, "movieid"), label, partly(s, e) ? 2 : (num_of(s, e, "playcount") > 0), "");
+}
+
+static void ob_show(const char *s, const char *e, LibOut *lo) {
+    char title[80], label[110];
+    const char *t = keyp(s, e, "label");
+    int n = num_of(s, e, "episode"), w = num_of(s, e, "watchedepisodes");
+    if (!t || !jstr(t, e, title, sizeof(title)) || n <= 0) return;
+    snprintf(label, sizeof(label), "%.60s - %d episodes, %d seen", title, n, w);
+    lib_put(lo, 's', num_of(s, e, "tvshowid"), label, w >= n, "");
+}
+
+static void ob_season(const char *s, const char *e, LibOut *lo) {
+    char label[80], extra[16];
+    int sn = num_of(s, e, "season"), n = num_of(s, e, "episode"), w = num_of(s, e, "watchedepisodes");
+    if (sn < 0) return;
+    if (sn == 0) snprintf(label, sizeof(label), "Specials - %d episodes, %d seen", n, w); else snprintf(label, sizeof(label), "Season %d - %d episodes, %d seen", sn, n, w);
+    snprintf(extra, sizeof(extra), "%d", g_lib_show);
+    lib_put(lo, 'n', sn, label, n > 0 && w >= n, extra);
+}
+
+static void ob_episode(const char *s, const char *e, LibOut *lo) {
+    char title[70], show[50], label[110];
+    const char *t = keyp(s, e, "title"), *st = keyp(s, e, "showtitle");
+    int season = num_of(s, e, "season"), ep = num_of(s, e, "episode");
+    if (!t || !jstr(t, e, title, sizeof(title))) return;
+    if (st && jstr(st, e, show, sizeof(show)) && show[0]) snprintf(label, sizeof(label), "%.40s S%02dE%02d %.40s", show, season, ep, title);   /* lists that mix shows */
+    else snprintf(label, sizeof(label), "E%02d  %.80s", ep, title);
+    lib_put(lo, 'e', num_of(s, e, "episodeid"), label, partly(s, e) ? 2 : (num_of(s, e, "playcount") > 0), "");
+}
+
+static int lib_reply(int kind, Seg *seg, char *out, int outsz) {
+    LibOut lo;
+    const char *lim;
+    int total = 0, start = 0, page = 0;
+    lo.out = out; lo.outsz = outsz; lo.len = 0; lo.force = kind == DK_LIB_CONT ? 2 : 0; out[0] = 0;
+    if (kind == DK_LIB_MOVIES || kind == DK_LIB_SHOWS) {
+        lim = keyp(seg[1].s, seg[1].e, "limits");
+        if (lim) { total = num_of(lim, seg[1].e, "total"); start = num_of(lim, seg[1].e, "start"); }
+        page = start / LIB_PAGE;
+        each_obj(seg[1].s, seg[1].e, kind == DK_LIB_MOVIES ? "movies" : "tvshows", kind == DK_LIB_MOVIES ? ob_movie : ob_show, &lo);
+        if (total > start + LIB_PAGE) {
+            char label[60];
+            snprintf(label, sizeof(label), "More %s (%d left)", kind == DK_LIB_MOVIES ? "movies" : "shows", total - start - LIB_PAGE);
+            lib_put(&lo, 'p', page + 1, label, 0, kind == DK_LIB_MOVIES ? "movies" : "shows");
+        }
+    } else if (kind == DK_LIB_SEASONS) {
+        each_obj(seg[1].s, seg[1].e, "seasons", ob_season, &lo);
+    } else if (kind == DK_LIB_EPS) {
+        char label[70], extra[16];
+        lim = keyp(seg[1].s, seg[1].e, "limits");
+        if (lim) total = num_of(lim, seg[1].e, "total");
+        if (total > 0) {                                              /* the first row adds the whole season (Kodi's own season folder, in order) */
+            snprintf(label, sizeof(label), "Add all %d episodes to the queue", total);
+            snprintf(extra, sizeof(extra), "%d", g_lib_show);
+            lib_put(&lo, 'a', g_lib_season, label, 0, extra);
+        }
+        each_obj(seg[1].s, seg[1].e, "episodes", ob_episode, &lo);
+    } else {                                                          /* DK_LIB_CONT and DK_LIB_RECENT: episodes first, then movies */
+        each_obj(seg[1].s, seg[1].e, "episodes", ob_episode, &lo);
+        if (seg[2].s) each_obj(seg[2].s, seg[2].e, "movies", ob_movie, &lo);
+    }
+    return 200;
+}
+
 static int put(char *out, int outsz, const char *s) { snprintf(out, outsz, "%s", s); return 0; }
 
 int dk_reply(int kind, int code, const char *json, char *out, int outsz) {
@@ -272,6 +485,15 @@ int dk_reply(int kind, int code, const char *json, char *out, int outsz) {
     split(json, seg, 8);
     if (!seg[1].s) { put(out, outsz, "unexpected reply (is this Kodi?)"); return 502; }
 
+    if (kind >= DK_LIB_MOVIES && kind <= DK_LIB_RECENT) {
+        const char *err = obj_key1(seg[1].s, seg[1].e, "error");
+        if (err) {
+            const char *mm = keyp(err, seg[1].e, "message");
+            if (mm && jstr(mm, seg[1].e, msg, sizeof(msg))) snprintf(out, outsz, "Kodi: %s", msg); else put(out, outsz, "Kodi refused that");
+            return 502;
+        }
+        return lib_reply(kind, seg, out, outsz);
+    }
     if (kind != DK_STATUS && kind != DK_QUEUE && kind != DK_TRACKS) {
         const char *err = obj_key1(seg[1].s, seg[1].e, "error");
         const char *res = obj_key1(seg[1].s, seg[1].e, "result");

@@ -92,6 +92,52 @@ static void self(void) {
     CHECK(code == 409 && has(out, "nothing is playing"), "tracks with nothing playing");
     dk_reply(DK_STATUS, 200, "[{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":[{\"playerid\":1}]},{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"muted\":false,\"volume\":50}},{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"item\":{\"label\":\"x\",\"title\":\"x\"}}},{\"id\":4,\"jsonrpc\":\"2.0\",\"result\":{\"percentage\":1.0,\"position\":7,\"speed\":1}},{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"total\":9}}}]", out, sizeof out);
     CHECK(has(out, "position=7\n") && has(out, "queue_len=9\n"), "status carries the queue position");
+    /* library lists, from replies in the shape Kodi sends (limits before the list for movies, after it for episodes) */
+    CHECK(dk_request("POST", "/t/lib/movies/2", body, sizeof body, &kind) == 0 && kind == DK_LIB_MOVIES && has(body, "GetMovies") && has(body, "\"start\":80") && has(body, "\"end\":120"), "movies page 2 asks for items 80 to 120");
+    code = dk_reply(DK_LIB_MOVIES, 200, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":2,\"start\":0,\"total\":100},\"movies\":[{\"label\":\"Alpha\",\"movieid\":1,\"playcount\":1,\"resume\":{\"position\":0.0,\"total\":0.0},\"year\":2001},"
+                   "{\"label\":\"Beta \\u00e9 | x\",\"movieid\":2,\"playcount\":0,\"resume\":{\"position\":300.0,\"total\":6000.0},\"year\":2002},{\"label\":\"Gamma\",\"movieid\":3,\"playcount\":0,\"resume\":{\"position\":0.0,\"total\":0.0},\"year\":0}]}}", out, sizeof out);
+    CHECK(code == 200 && has(out, "m|1|Alpha (2001)|1|\n") && has(out, "m|2|Beta ? / x (2002)|2|\n") && has(out, "m|3|Gamma|0|\n") && has(out, "p|1|More movies (60 left)|0|movies\n"), "movies: watched 1, partly watched 2, year, odd characters, a next-page row");
+    CHECK(dk_request("POST", "/t/lib/shows", body, sizeof body, &kind) == 0 && kind == DK_LIB_SHOWS && has(body, "GetTVShows"), "shows request");
+    code = dk_reply(DK_LIB_SHOWS, 200, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":3,\"start\":0,\"total\":3},\"tvshows\":[{\"episode\":275,\"label\":\"Bob's Burgers\",\"tvshowid\":1,\"watchedepisodes\":9},"
+                   "{\"episode\":0,\"label\":\"Empty\",\"tvshowid\":4,\"watchedepisodes\":0},{\"episode\":3,\"label\":\"Done\",\"tvshowid\":6,\"watchedepisodes\":3}]}}", out, sizeof out);
+    CHECK(code == 200 && has(out, "s|1|Bob's Burgers - 275 episodes, 9 seen|0|\n") && !has(out, "Empty") && has(out, "s|6|Done - 3 episodes, 3 seen|1|\n") && !has(out, "p|"), "shows: counts, a show with no episodes left out, all seen is 1");
+    CHECK(dk_request("POST", "/t/lib/seasons/7", body, sizeof body, &kind) == 0 && kind == DK_LIB_SEASONS && has(body, "\"tvshowid\":7"), "seasons request");
+    code = dk_reply(DK_LIB_SEASONS, 200, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":2,\"start\":0,\"total\":2},\"seasons\":[{\"episode\":3,\"label\":\"Specials\",\"season\":0,\"seasonid\":9,\"watchedepisodes\":0},{\"episode\":13,\"label\":\"Season 1\",\"season\":1,\"seasonid\":10,\"watchedepisodes\":13}]}}", out, sizeof out);
+    CHECK(code == 200 && has(out, "n|0|Specials - 3 episodes, 0 seen|0|7\n") && has(out, "n|1|Season 1 - 13 episodes, 13 seen|1|7\n"), "seasons carry the show id; Specials; fully seen is 1");
+    CHECK(dk_request("POST", "/t/lib/eps/7/1", body, sizeof body, &kind) == 0 && kind == DK_LIB_EPS && has(body, "\"season\":1"), "episodes request");
+    code = dk_reply(DK_LIB_EPS, 200, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"episodes\":[{\"episode\":1,\"episodeid\":16,\"label\":\"1x01. Pilot\",\"playcount\":1,\"resume\":{\"position\":0.0,\"total\":0.0},\"season\":1,\"title\":\"Pilot\"},"
+                   "{\"episode\":2,\"episodeid\":17,\"label\":\"1x02. Second\",\"playcount\":0,\"resume\":{\"position\":50.0,\"total\":1300.0},\"season\":1,\"title\":\"Second\"}],\"limits\":{\"end\":2,\"start\":0,\"total\":13}}}", out, sizeof out);
+    CHECK(code == 200 && has(out, "a|1|Add all 13 episodes to the queue|0|7\n") && has(out, "e|16|E01  Pilot|1|\n") && has(out, "e|17|E02  Second|2|\n"), "episodes: add-all row first (count read from limits after the list), watched and partly watched");
+    CHECK(dk_request("POST", "/t/lib/continue", body, sizeof body, &kind) == 0 && kind == DK_LIB_CONT && has(body, "inprogress") && has(body, "\"value\":\"\""), "continue request uses Kodi's inprogress filter with the empty value");
+    code = dk_reply(DK_LIB_CONT, 200, "[{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"episodes\":[{\"episodeid\":67,\"episode\":14,\"label\":\"11x14. Mr. Lonely\",\"season\":11,\"showtitle\":\"Bob's Burgers\",\"title\":\"Mr. Lonely\"}],\"limits\":{\"end\":1,\"start\":0,\"total\":1}}},"
+                   "{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":1,\"start\":0,\"total\":1},\"movies\":[{\"label\":\"Movie X\",\"movieid\":80,\"year\":2026}]}}]", out, sizeof out);
+    CHECK(code == 200 && has(out, "e|67|Bob's Burgers S11E14 Mr. Lonely|2|\n") && has(out, "m|80|Movie X (2026)|2|\n"), "continue: episodes then movies, all marked partly watched");
+    CHECK(dk_request("POST", "/t/lib/recent", body, sizeof body, &kind) == 0 && kind == DK_LIB_RECENT && has(body, "RecentlyAddedEpisodes") && has(body, "RecentlyAddedMovies"), "recent request");
+    code = dk_reply(DK_LIB_RECENT, 200, "[{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"episodes\":[{\"episodeid\":648,\"episode\":4,\"label\":\"x\",\"playcount\":0,\"season\":3,\"showtitle\":\"The Boys\",\"title\":\"Plan\"}],\"limits\":{\"end\":1,\"start\":0,\"total\":1}}},"
+                   "{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":0,\"start\":0,\"total\":0}}}]", out, sizeof out);
+    CHECK(code == 200 && has(out, "e|648|The Boys S03E04 Plan|0|\n"), "recent: an empty movie list is fine");
+    code = dk_reply(DK_LIB_MOVIES, 200, "{\"id\":1,\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Invalid params.\"}}", out, sizeof out);
+    CHECK(code == 502 && has(out, "Invalid params"), "a Kodi error is passed on");
+    /* library actions */
+    CHECK(dk_request("POST", "/t/lib/add/m/5", body, sizeof body, &kind) == 0 && has(body, "Playlist.Add") && has(body, "\"movieid\":5"), "add a movie");
+    CHECK(dk_request("POST", "/t/lib/next/e/12/3", body, sizeof body, &kind) == 0 && has(body, "Playlist.Insert") && has(body, "\"position\":4") && has(body, "\"episodeid\":12"), "play next goes after the playing position");
+    CHECK(dk_request("POST", "/t/lib/next/e/12/-1", body, sizeof body, &kind) == 0 && has(body, "Playlist.Add") && !has(body, "Insert"), "play next with nothing playing adds at the end");
+    CHECK(dk_request("POST", "/t/lib/play/m/9/3/10", body, sizeof body, &kind) == 0 && kind == DK_BATCH && has(body, "Playlist.Insert") && has(body, "\"position\":4") && has(body, "Player.GoTo"), "play now while playing: insert after it and step on");
+    CHECK(dk_request("POST", "/t/lib/play/m/9/-1/10", body, sizeof body, &kind) == 0 && kind == DK_BATCH && has(body, "Playlist.Add") && has(body, "Player.Open") && has(body, "\"position\":10"), "play now with nothing playing: add and open at the old queue length");
+    CHECK(dk_request("POST", "/t/lib/addseason/7/2", body, sizeof body, &kind) == 0 && has(body, "videodb://tvshows/titles/7/2/") && has(body, "\"directory\""), "add a whole season through Kodi's season folder");
+    CHECK(dk_request("POST", "/t/lib/add/x/1", body, sizeof body, &kind) == -1 && dk_request("POST", "/t/lib/eps/0/1", body, sizeof body, &kind) == -1 && dk_request("POST", "/t/lib/nonsense", body, sizeof body, &kind) == -1 && dk_request("POST", "/t/lib/movies/9999", body, sizeof body, &kind) == -1, "bad library requests are refused");
+    { static char big[16000], o2[12288]; int i, n = 0;                              /* a full page of 40 movies fits the 12 KB list buffer */
+      n += snprintf(big + n, sizeof big - n, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"limits\":{\"end\":40,\"start\":0,\"total\":200},\"movies\":[");
+      for (i = 0; i < 40; i++) n += snprintf(big + n, sizeof big - n, "%s{\"label\":\"2020-11-04 - A fairly long movie title number %d with words\",\"movieid\":%d,\"playcount\":0,\"resume\":{\"position\":0.0,\"total\":0.0},\"year\":2020}", i ? "," : "", i, i + 1);
+      snprintf(big + n, sizeof big - n, "]}}");
+      code = dk_reply(DK_LIB_MOVIES, 200, big, o2, sizeof o2);
+      CHECK(code == 200 && strlen(o2) < 6000 && has(o2, "m|40|") && has(o2, "p|1|More movies (160 left)"), "a full page of 40 movies and the next-page row fit"); }
+    CHECK(dk_request("POST", "/t/q/clear/all", body, sizeof body, &kind) == 0 && has(body, "Playlist.Clear"), "clear all request");
+    CHECK(dk_request("POST", "/t/q/clear/keep/1/4", body, sizeof body, &kind) == 0 && kind == DK_BATCH && has(body, "\"position\":3") && has(body, "\"position\":2")
+          && has(body, "\"position\":0") && !has(body, "\"position\":1}"), "clear keep: removes every position except the playing one, highest first");
+    CHECK(dk_request("POST", "/t/q/clear/keep/0/1", body, sizeof body, &kind) == 0 && has(body, "Ping"), "clear keep with only the playing item does nothing");
+    CHECK(dk_request("POST", "/t/q/clear/keep/-1/3", body, sizeof body, &kind) == 0 && has(body, "\"position\":2") && has(body, "\"position\":0"), "clear keep with nothing playing removes all");
+    { static char big[16000]; CHECK(dk_request("POST", "/t/q/clear/keep/5/128", big, sizeof big, &kind) == 0 && strlen(big) < 15900, "clearing a queue of 128 fits the buffer"); }
     /* queue */
     const char *q = "[{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"items\":[{\"label\":\"One\",\"type\":\"unknown\"},{\"label\":\"Two | pipe\",\"type\":\"unknown\"},{\"label\":\"Three\",\"type\":\"unknown\"}],\"limits\":{\"end\":3,\"start\":0,\"total\":3}}},"
         "{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"playlistid\":1,\"position\":1}}]";
@@ -185,9 +231,30 @@ static void live(const char *host, int port, const char *user, const char *pass)
     }
 }
 
+/* read-only check of the library lists against a real Kodi: nothing is added, played or changed */
+static void livelib(const char *host, int port, const char *user, const char *pass) {
+    static char body[4096], req[8192], resp[60000], out[12288];
+    const char *paths[] = { "/t/lib/continue", "/t/lib/recent", "/t/lib/movies", "/t/lib/shows", "/t/lib/seasons/1", "/t/lib/eps/1/1", NULL };
+    int i, kind, code;
+    for (i = 0; paths[i]; i++) {
+        char *b; int lines = 0; const char *c;
+        if (dk_request("POST", paths[i], body, sizeof body, &kind)) { printf("FAIL no translation for %s\n", paths[i]); fails++; continue; }
+        dk_http(req, sizeof req, host, port, user, pass, body);
+        exchange(host, port, req, resp, sizeof resp);
+        b = strstr(resp, "\r\n\r\n"); b = b ? b + 4 : resp;
+        sscanf(resp, "HTTP/1.%*d %d", &code);
+        code = dk_reply(kind, code, b, out, sizeof out);
+        for (c = out; *c; c++) if (*c == '\n') lines++;
+        printf("%s -> %d, %d lines, %d bytes of JSON\n", paths[i], code, lines, (int)strlen(b));
+        { char first[160]; int n = 0; for (c = out; *c && *c != '\n' && n < 150; c++) first[n++] = *c; first[n] = 0; printf("    first: %s\n", first); }
+        if (code != 200 || lines == 0) fails++;
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "self")) self();
     else if (argc >= 4 && !strcmp(argv[1], "qswap")) qswap(argv[2], atoi(argv[3]));
+    else if (argc >= 4 && !strcmp(argv[1], "livelib")) livelib(argv[2], atoi(argv[3]), getenv("DK_USER") ? getenv("DK_USER") : "", getenv("DK_PASS") ? getenv("DK_PASS") : "");
     else if (argc >= 4 && !strcmp(argv[1], "live")) live(argv[2], atoi(argv[3]), getenv("DK_USER") ? getenv("DK_USER") : "", getenv("DK_PASS") ? getenv("DK_PASS") : "");
     else { printf("usage: dk_test self | live HOST PORT   (login from the DK_USER and DK_PASS environment variables)\n"); return 2; }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);

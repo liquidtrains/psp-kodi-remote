@@ -12,7 +12,15 @@ Prefix any path with /t/ for a plain-text reply (the PSP client uses these): lis
 
   GET  /status            now playing, paused, percent, position, queue length, volume   (text: key=value lines)
   GET  /shows             shows usable with random/order
-  GET  /channels          Twitch/Kick channels from ~/.config/tvplay-api/channels.txt with live flag   (text: platform|name|live)
+  GET  /channels          Twitch/Kick channels from ~/.config/tvplay-api/channels.txt with live flag   (text: platform|name|live|title|category)
+  GET  /showlist          the Shows menu: mode|key|label lines (mode r random, o in order); from ~/.config/tvplay-api/shows.txt, built-in list if absent
+  POST /seek/<seconds>    jump forward (or back with a minus) from the current time; /seek/pct/<0-99> jumps to a percentage; refused for live streams
+  POST /q/clear/keep      empty the queue except the playing item;  /q/clear/all empties it completely (playback stops). Both save the queue first;
+                          POST /q/restore/clear brings back the queue as it was before the last clear (a snapshot the one-minute loop never overwrites)
+  GET  /lib/movies[/<page>] | shows | seasons/<show> | eps/<show>/<season> | continue | recent   the Kodi video library as kind|id|label|flag|extra lines
+                          (kind m movie, s show, n season, e episode, a add-the-season row, p next page; flag 1 watched, 2 partly watched)
+  POST /lib/play|next|add/<m|e>/<id>   play now, play next, add to the end of the queue; /lib/addseason/<show>/<season> adds a whole season in order
+  POST /shuffle | /repeat toggle shuffle (a queue snapshot is taken first) | cycle repeat off, all, one
   GET  /favs              Kodi IPTV Favourites group                                       (text: id|name)
   GET  /queue             Kodi playlist 1                                                  (text: pos|title, first line cur=N)
   POST /random/<show>     tvplay random <show>        (bobs house koth rick)
@@ -50,7 +58,7 @@ SNAP_DIR = f"{STATE}/queue-snapshots"
 START = time.time()
 VERSION = "2026.11.24"
 SHOWS = {"bobs": "bobs", "house": "house", "koth": "koth", "rick": "rick", "firefly": "firefly"}
-RANDOM_OK = {"bobs", "house", "koth", "rick"}          # firefly is in-order only (see the host card)
+RANDOM_OK = {"bobs", "house", "koth", "rick"}          # example: one show offered in order only
 KEYS = {"up": "Input.Up", "down": "Input.Down", "left": "Input.Left", "right": "Input.Right",
         "select": "Input.Select", "back": "Input.Back", "home": "Input.Home", "info": "Input.Info",
         "context": "Input.ContextMenu"}
@@ -59,6 +67,7 @@ PLAT = {"twitch": "https://www.twitch.tv/", "kick": "https://kick.com/"}
 NAME_RE = re.compile(r"^[A-Za-z0-9_]{2,25}$")
 LOCK = threading.Lock()                                 # one tvplay at a time; they all touch the same playlist
 LAST_LIVE = ""                                          # "twitch/name" of the last channel started from here, to label a live stream
+CAT = {}                                                # (platform, name) -> category (game) of a live channel
 TITLE = {}                                              # (platform, name) -> stream title of a live channel, plain ASCII, from streamlink metadata
 LIVE = {}                                               # (platform, name) -> True / False / None (unknown), refreshed in the background
 
@@ -131,10 +140,15 @@ def check_live(pn):
         d = json.loads(r.stdout or "{}")
         live = bool(d.get("streams"))
         t = re.sub(r"\s+", " ", re.sub(r"[^\x20-\x7e]", "", str((d.get("metadata") or {}).get("title") or ""))).replace("|", "/").strip()
+        c = re.sub(r"\s+", " ", re.sub(r"[^\x20-\x7e]", "", str((d.get("metadata") or {}).get("category") or ""))).replace("|", "/").strip()
         if live and t:
             TITLE[pn] = t[:70]
         else:
             TITLE.pop(pn, None)
+        if live and c:
+            CAT[pn] = c[:40]
+        else:
+            CAT.pop(pn, None)
         return live
     except (subprocess.TimeoutExpired, ValueError):
         return None
@@ -182,6 +196,15 @@ def chat_url(tag):
     return {"twitch": f"https://www.twitch.tv/popout/{name}/chat", "kick": f"https://kick.com/popout/{name}/chat"}.get(plat, "")
 
 
+def hms_secs(t):
+    """Kodi's {hours, minutes, seconds} time object as whole seconds"""
+    t = t or {}
+    try:
+        return int(t.get("hours", 0)) * 3600 + int(t.get("minutes", 0)) * 60 + int(t.get("seconds", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _status():
     players = kodi("Player.GetActivePlayers")
     if players is None:
@@ -191,7 +214,7 @@ def _status():
     res = {"playing": bool(players), "queue_len": len(q), "volume": app.get("volume"), "muted": bool(app.get("muted"))}
     if players:
         item = (kodi("Player.GetItem", {"playerid": 1, "properties": ["title", "showtitle", "season", "episode", "file"]}) or {}).get("item", {})
-        pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["position", "percentage", "speed"]}) or {}
+        pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["position", "percentage", "speed", "time", "totaltime", "shuffled", "repeat"]}) or {}
         label = item.get("label") or item.get("title") or ""
         show = item.get("showtitle")
         f = item.get("file", "")
@@ -201,7 +224,8 @@ def _status():
             if tag:
                 res.update(live=tag, chat=chat_url(tag))
         res.update(title=(show + " - " if show else "") + label, paused=pr.get("speed") == 0,
-                   percent=round(pr.get("percentage", 0), 1), position=pr.get("position"))
+                   percent=round(pr.get("percentage", 0), 1), position=pr.get("position"),
+                   time=hms_secs(pr.get("time")), total=hms_secs(pr.get("totaltime")), shuffled=bool(pr.get("shuffled")), repeat=str(pr.get("repeat") or "off"))
     return res
 
 
@@ -210,10 +234,82 @@ def status_text(d):
         return "error=" + clean(d["error"]) + "\n"
     lines = [f"playing={int(d['playing'])}", f"queue_len={d['queue_len']}", f"volume={d.get('volume')}", f"muted={int(d['muted'])}"]
     if d["playing"]:
-        lines += [f"title={clean(d['title'], 90)}", f"paused={int(d['paused'])}", f"percent={d['percent']}", f"position={d['position']}"]
+        lines += [f"title={clean(d['title'], 90)}", f"paused={int(d['paused'])}", f"percent={d['percent']}", f"position={d['position']}",
+                  f"time={d.get('time', 0)}", f"total={d.get('total', 0)}", f"shuffled={int(d.get('shuffled', False))}", f"repeat={d.get('repeat', 'off')}"]
         if d.get("live"):
             lines += [f"live={d['live']}", f"chat={d['chat']}"]
     return "\n".join(lines) + "\n"
+
+
+SHOWS_FILE = f"{HOME}/.config/tvplay-api/shows.txt"
+SHOWS_BUILTIN = [("random", "bobs", "Bob's Burgers"), ("random", "house", "House"), ("random", "koth", "King of the Hill"),
+                 ("random", "rick", "Rick and Morty"), ("order", "firefly", "Firefly")]
+
+
+def show_rows():
+    """[(mode, key, label)] from shows.txt (lines: key|Label|random or order), the built-in list when the file is missing or has no usable line.
+    The keys must be names tvplay itself understands: this file chooses what the menu offers, tvplay still decides what exists."""
+    rows = []
+    try:
+        for line in open(SHOWS_FILE):
+            f = [x.strip() for x in line.split("#")[0].split("|")]
+            if len(f) >= 3 and re.fullmatch(r"[a-z0-9_]{2,11}", f[0]) and f[2] in ("random", "order") and f[1]:
+                rows.append((f[2], f[0], clean(f[1], 40)))
+    except OSError:
+        pass
+    return rows[:40] or list(SHOWS_BUILTIN)
+
+
+def refresh_shows():
+    rows = show_rows()
+    SHOWS.clear()
+    SHOWS.update({k: k for _, k, _ in rows})
+    RANDOM_OK.clear()
+    RANDOM_OK.update(k for m, k, _ in rows if m == "random")
+    return rows
+
+
+def showlist_text():
+    return "".join(f"{'r' if m == 'random' else 'o'}|{k}|{l} - {'random' if m == 'random' else 'in order'}\n" for m, k, l in refresh_shows())
+
+
+def mmss(s):
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def seek(kind, val):
+    """kind 'delta': val seconds from now (negative goes back); kind 'pct': val 0-99. Absolute seek, so a mistimed press cannot overshoot the end."""
+    if not re.fullmatch(r"[+-]?\d{1,5}", str(val)):
+        return 400, {"error": "bad seek value"}
+    n = int(val)
+    if kind == "pct" and not 0 <= n <= 99:
+        return 400, {"error": "percent must be 0 to 99"}
+    if DRY:
+        return 200, {"dry_run": True, "would_call": f"Player.Seek {kind} {n}"}
+    pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["time", "totaltime"]}) or {}
+    cur, total = hms_secs(pr.get("time")), hms_secs(pr.get("totaltime"))
+    if total <= 0:
+        return 409, {"error": "cannot seek: nothing playing or a live stream"}
+    target = total * n // 100 if kind == "pct" else cur + n
+    target = max(0, min(total - 3, target))
+    r = kodi("Player.Seek", {"playerid": 1, "value": {"time": {"hours": target // 3600, "minutes": target % 3600 // 60, "seconds": target % 60, "milliseconds": 0}}})
+    if r is None:
+        return 502, {"error": "Kodi refused the seek"}
+    return 200, {"result": f"{mmss(target)} / {mmss(total)}"}
+
+
+def playback_toggle(which):
+    if DRY:
+        return 200, {"dry_run": True, "would_call": f"Player.Set{which}"}
+    if which == "shuffle":
+        snapshot("before shuffle")                       # Kodi reorders the queue when it shuffles; this is the way back
+        r = kodi("Player.SetShuffle", {"playerid": 1, "shuffle": "toggle"})
+    else:
+        r = kodi("Player.SetRepeat", {"playerid": 1, "repeat": "cycle"})
+    if r is None:
+        return 409, {"error": "nothing is playing"}
+    pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["shuffled", "repeat"]}) or {}
+    return 200, {"result": ("shuffle " + ("on" if pr.get("shuffled") else "off")) if which == "shuffle" else "repeat " + str(pr.get("repeat") or "off")}
 
 
 def channels_view():
@@ -300,6 +396,189 @@ def restore_queue(target):
     return ops
 
 
+def lib_label(s):
+    return clean(s, 58)
+
+
+def lib_flag(playcount, resume=None):
+    if resume and (resume.get("position") or 0) > 0:
+        return 2
+    return 1 if (playcount or 0) > 0 else 0
+
+
+def lib_view(what, a="", b=""):
+    """GET /lib/...: returns (code, text). Lines: kind|id|label|flag|extra"""
+    out = []
+    PAGE = 100
+    if what == "movies":
+        page = int(a) if a.isdigit() else 0
+        r = kodi("VideoLibrary.GetMovies", {"properties": ["year", "playcount", "resume"], "sort": {"method": "label", "order": "ascending"},
+                                            "limits": {"start": page * PAGE, "end": page * PAGE + PAGE}})
+        if r is None:
+            return 502, "error: kodi unreachable"
+        for m in r.get("movies") or []:
+            y = f" ({m['year']})" if m.get("year") else ""
+            out.append(f"m|{m['movieid']}|{lib_label(m.get('label', '') + y)}|{lib_flag(m.get('playcount'), m.get('resume'))}|")
+        total = (r.get("limits") or {}).get("total", 0)
+        if total > page * PAGE + PAGE:
+            out.append(f"p|{page + 1}|More movies ({total - page * PAGE - PAGE} left)|0|movies")
+    elif what == "shows":
+        r = kodi("VideoLibrary.GetTVShows", {"properties": ["episode", "watchedepisodes"], "sort": {"method": "label", "order": "ascending"}})
+        if r is None:
+            return 502, "error: kodi unreachable"
+        for s in r.get("tvshows") or []:
+            n, w = s.get("episode") or 0, s.get("watchedepisodes") or 0
+            if n:
+                out.append(f"s|{s['tvshowid']}|{lib_label(s.get('label', ''))} - {n} episodes, {w} seen|{1 if w >= n else 0}|")
+    elif what == "seasons" and a.isdigit():
+        r = kodi("VideoLibrary.GetSeasons", {"tvshowid": int(a), "properties": ["season", "episode", "watchedepisodes"]})
+        if r is None:
+            return 502, "error: kodi unreachable"
+        for s in r.get("seasons") or []:
+            n, w = s.get("episode") or 0, s.get("watchedepisodes") or 0
+            name = "Specials" if s.get("season") == 0 else f"Season {s.get('season')}"
+            out.append(f"n|{s.get('season')}|{name} - {n} episodes, {w} seen|{1 if n and w >= n else 0}|{a}")
+    elif what == "eps" and a.isdigit() and b.lstrip("-").isdigit():
+        r = kodi("VideoLibrary.GetEpisodes", {"tvshowid": int(a), "season": int(b), "properties": ["title", "season", "episode", "playcount", "resume"],
+                                              "sort": {"method": "episode", "order": "ascending"}})
+        if r is None:
+            return 502, "error: kodi unreachable"
+        eps = r.get("episodes") or []
+        if eps:
+            out.append(f"a|{int(b)}|Add all {len(eps)} episodes to the queue|0|{a}")
+        for e in eps:
+            out.append(f"e|{e['episodeid']}|{lib_label('E%02d  %s' % (e.get('episode') or 0, e.get('title') or e.get('label', '')))}|{lib_flag(e.get('playcount'), e.get('resume'))}|")
+    elif what == "continue":
+        flt = {"field": "inprogress", "operator": "true", "value": ""}       # Kodi insists on the empty value
+        for kind, method, key, props in (("e", "VideoLibrary.GetEpisodes", "episodes", ["title", "showtitle", "season", "episode", "resume", "playcount"]),
+                                         ("m", "VideoLibrary.GetMovies", "movies", ["year", "resume", "playcount"])):
+            r = kodi(method, {"filter": flt, "properties": props, "limits": {"start": 0, "end": 30}})
+            if r is None:
+                return 502, "error: kodi unreachable"
+            for x in r.get(key) or []:
+                if kind == "e":
+                    lab = f"{x.get('showtitle', '')} S{x.get('season') or 0:02d}E{x.get('episode') or 0:02d} {x.get('title', '')}"
+                    out.append(f"e|{x['episodeid']}|{lib_label(lab)}|2|")
+                else:
+                    out.append(f"m|{x['movieid']}|{lib_label(x.get('label', ''))}|2|")
+    elif what == "recent":
+        r = kodi("VideoLibrary.GetRecentlyAddedEpisodes", {"properties": ["title", "showtitle", "season", "episode", "playcount", "resume"], "limits": {"start": 0, "end": 25}})
+        r2 = kodi("VideoLibrary.GetRecentlyAddedMovies", {"properties": ["year", "playcount", "resume"], "limits": {"start": 0, "end": 15}})
+        if r is None and r2 is None:
+            return 502, "error: kodi unreachable"
+        for x in (r or {}).get("episodes") or []:
+            lab = f"{x.get('showtitle', '')} S{x.get('season') or 0:02d}E{x.get('episode') or 0:02d} {x.get('title', '')}"
+            out.append(f"e|{x['episodeid']}|{lib_label(lab)}|{lib_flag(x.get('playcount'), x.get('resume'))}|")
+        for x in (r2 or {}).get("movies") or []:
+            out.append(f"m|{x['movieid']}|{lib_label(x.get('label', ''))}|{lib_flag(x.get('playcount'), x.get('resume'))}|")
+    else:
+        return 404, "error: unknown library list"
+    return 200, "".join(l + "\n" for l in out)
+
+
+def lib_item(kind, ident):
+    """({'movieid': n} or {'episodeid': n}, label) when Kodi has that item, else None"""
+    if kind not in ("m", "e") or not str(ident).isdigit():
+        return None
+    if kind == "m":
+        r = (kodi("VideoLibrary.GetMovieDetails", {"movieid": int(ident), "properties": ["title"]}) or {}).get("moviedetails")
+        return ({"movieid": int(ident)}, r.get("title", "movie")) if r else None
+    r = (kodi("VideoLibrary.GetEpisodeDetails", {"episodeid": int(ident), "properties": ["title"]}) or {}).get("episodedetails")
+    return ({"episodeid": int(ident)}, r.get("title", "episode")) if r else None
+
+
+def lib_queue(mode, kind, ident):
+    """play now / play next / add to the end. The queue is saved first; add and next can be undone."""
+    found = lib_item(kind, ident)
+    if not found:
+        return 404, {"error": "no such item in the library"}
+    item, label = found
+    if DRY:
+        return 200, {"dry_run": True, "would_call": f"library {mode} {kind} {ident}"}
+    files = queue_files()
+    n = len(files)
+    pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["playlistid", "position"]}) or {}
+    cur = pr["position"] if pr.get("playlistid") == 1 else -1
+    with QLOCK:
+        snapshot(f"before library {mode}")
+        if mode == "add":
+            kodi("Playlist.Add", {"playlistid": 1, "item": item})
+            UNDO.append(("remove", n))
+            del UNDO[:-20]
+            return 200, {"result": f"added to the end: {clean(label, 40)}"}
+        if mode == "next":
+            pos = cur + 1 if cur >= 0 else n
+            kodi("Playlist.Insert", {"playlistid": 1, "position": pos, "item": item})
+            UNDO.append(("remove", pos))
+            del UNDO[:-20]
+            return 200, {"result": f"plays next: {clean(label, 40)}"}
+        if cur >= 0:                                     # play now while something is playing: put it right after, then step to it
+            kodi("Playlist.Insert", {"playlistid": 1, "position": cur + 1, "item": item})
+            kodi("Player.GoTo", {"playerid": 1, "to": "next"})
+        else:
+            kodi("Playlist.Add", {"playlistid": 1, "item": item})
+            kodi("Player.Open", {"item": {"playlistid": 1, "position": n}})
+        return 200, {"result": f"playing: {clean(label, 40)}"}
+
+
+def lib_addseason(show, season):
+    if not (str(show).isdigit() and str(season).lstrip("-").isdigit()):
+        return 400, {"error": "bad show or season"}
+    r = kodi("VideoLibrary.GetEpisodes", {"tvshowid": int(show), "season": int(season), "properties": ["episode"], "sort": {"method": "episode", "order": "ascending"}})
+    eps = (r or {}).get("episodes") or []
+    if not eps:
+        return 404, {"error": "no episodes found for that season"}
+    eps = eps[:80]
+    if DRY:
+        return 200, {"dry_run": True, "would_call": f"add {len(eps)} episodes"}
+    n = len(queue_files())
+    with QLOCK:
+        snapshot("before adding a season")
+        for e in eps:
+            kodi("Playlist.Add", {"playlistid": 1, "item": {"episodeid": e["episodeid"]}})
+        UNDO.append(("removerange", n, len(eps)))
+        del UNDO[:-20]
+    return 200, {"result": f"added {len(eps)} episodes to the end"}
+
+
+CLEAR_FILE = f"{STATE}/queue-before-clear.json"
+
+
+def queue_clear(mode):
+    """mode 'keep': remove everything except the playing item (highest position first, so positions stay valid); 'all': Playlist.Clear.
+    The queue is saved to CLEAR_FILE first, so 'restore/clear' can put it back; the periodic snapshots would be overwritten by the cleared queue within a minute."""
+    items = queue_files()
+    if not items:
+        return 409, {"error": "the queue is already empty"}
+    pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["playlistid", "position"]}) or {}
+    cur = pr["position"] if pr.get("playlistid") == 1 else -1
+    if DRY:
+        return 200, {"dry_run": True, "would_call": f"clear {mode}"}
+    with QLOCK:
+        os.makedirs(STATE, exist_ok=True)
+        with open(CLEAR_FILE, "w") as f:
+            json.dump({"time": time.strftime("%F %T"), "reason": f"before clear {mode}", "files": [x for x in items if x and not is_stream(x)], "cur": cur}, f)
+        snapshot(f"before clear {mode}")
+        UNDO.clear()
+        if mode == "all":
+            kodi("Playlist.Clear", {"playlistid": 1})
+            return 200, {"result": f"cleared all {len(items)} items"}
+        for pos in range(len(items) - 1, -1, -1):
+            if pos != cur:
+                kodi("Playlist.Remove", {"playlistid": 1, "position": pos})
+    return 200, {"result": f"cleared {len(items) - (1 if cur >= 0 else 0)} items, the playing one stays"}
+
+
+def queue_restore_cleared():
+    try:
+        snap = json.load(open(CLEAR_FILE))
+    except (OSError, ValueError):
+        return 404, {"error": "no cleared queue saved"}
+    with QLOCK:
+        n = restore_queue(snap["files"])
+    return 200, {"result": f"restored the queue from before the clear ({len(snap['files'])} items, {n} fixes)"}
+
+
 def queue_undo():
     with QLOCK:
         if not UNDO:
@@ -308,6 +587,16 @@ def queue_undo():
         if op[0] == "insert":
             kodi("Playlist.Insert", {"playlistid": 1, "position": op[1], "item": {"file": op[2]}})
             return 200, {"result": "put the removed item back"}
+        if op[0] in ("remove", "removerange"):
+            first, count = op[1], (op[2] if op[0] == "removerange" else 1)
+            pr = kodi("Player.GetProperties", {"playerid": 1, "properties": ["playlistid", "position"]}) or {}
+            cur = pr["position"] if pr.get("playlistid") == 1 else -1
+            if first <= cur < first + count:
+                UNDO.append(op)
+                return 409, {"error": "that item is playing now; it cannot be taken out"}
+            for pos in range(first + count - 1, first - 1, -1):
+                kodi("Playlist.Remove", {"playlistid": 1, "position": pos})
+            return 200, {"result": f"took out the {count} item{'s' if count != 1 else ''} just added"}
         swap_chain(op[1], op[2])
         return 200, {"result": f"moved {op[1]} back to {op[2]}"}
 
@@ -516,6 +805,11 @@ class H(BaseHTTPRequestHandler):
             if v == "status":
                 d = status()
                 return self.send(502 if "error" in d else 200, status_text(d) if self.txt else d)
+            if v == "lib":
+                code, text = lib_view(arg, arg2, parts[3] if len(parts) > 3 else "")
+                return self.send(code, text)
+            if v == "showlist":
+                return self.send(200, showlist_text() if self.txt else [{"mode": m, "key": k, "label": l} for m, k, l in refresh_shows()])
             if v == "tracks":
                 tv = tracks_view()
                 return self.send(200 if tv is not None else 409, tv if tv is not None else "nothing is playing")
@@ -523,8 +817,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, "\n".join(sorted(SHOWS)) if self.txt else {"random": sorted(RANDOM_OK), "order": sorted(SHOWS)})
             if v == "channels":
                 rows = channels_view()
-                return self.send(200, "".join(f"{p}|{n}|{'?' if lv is None else int(lv)}|{TITLE.get((p, n), '') if lv else ''}\n" for p, n, lv in rows) if self.txt
-                                 else [{"platform": p, "name": n, "live": lv, "title": TITLE.get((p, n), "") if lv else ""} for p, n, lv in rows])
+                return self.send(200, "".join(f"{p}|{n}|{'?' if lv is None else int(lv)}|{TITLE.get((p, n), '') if lv else ''}|{CAT.get((p, n), '') if lv else ''}\n" for p, n, lv in rows) if self.txt
+                                 else [{"platform": p, "name": n, "live": lv, "title": TITLE.get((p, n), "") if lv else "", "category": CAT.get((p, n), "") if lv else ""} for p, n, lv in rows])
             if v == "favs":
                 rows = favs_view()
                 return self.send(200, "".join(f"{i}|{clean(n)}\n" for i, n in rows) if self.txt else [{"id": i, "name": n} for i, n in rows])
@@ -535,6 +829,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(404, {"error": "unknown view"})
         if method != "POST":
             return self.send(405, {"error": "use POST for actions"})
+        if v in ("random", "order"):
+            refresh_shows()
         if v == "random" and arg in RANDOM_OK:
             return self.send(*run_tvplay("random", SHOWS[arg]))
         if v == "order" and arg in SHOWS:
@@ -555,9 +851,24 @@ class H(BaseHTTPRequestHandler):
                 if DRY:
                     return self.send(200, {"dry_run": True, "would_call": f"goto {arg}"})
                 return self.send(200, {"result": kodi("Player.Open", {"item": {"playlistid": 1, "position": int(arg)}})})
-        if v == "q" and arg in ("undo", "restore"):
-            code, res = queue_undo() if arg == "undo" else queue_restore()
+        if v == "q" and arg == "clear" and arg2 in ("keep", "all"):
+            code, res = queue_clear(arg2)
             return self.send(code, (res.get("result") or res.get("error")) if self.txt else res)
+        if v == "q" and arg in ("undo", "restore"):
+            code, res = queue_undo() if arg == "undo" else (queue_restore_cleared() if arg2 == "clear" else queue_restore())
+            return self.send(code, (res.get("result") or res.get("error")) if self.txt else res)
+        if v == "lib" and arg in ("play", "next", "add") and len(parts) > 3:
+            code, res = lib_queue(arg, arg2, parts[3])
+            return self.send(code, (res.get("result") or res.get("error")) if self.txt else res)
+        if v == "lib" and arg == "addseason" and len(parts) > 3:
+            code, res = lib_addseason(arg2, parts[3])
+            return self.send(code, (res.get("result") or res.get("error")) if self.txt else res)
+        if v == "seek" and arg:
+            code, res = seek("pct", arg2) if arg == "pct" else seek("delta", arg)
+            return self.send(code, (res.get("result") or res.get("error") or "ok") if self.txt else res)
+        if v in ("shuffle", "repeat"):
+            code, res = playback_toggle(v)
+            return self.send(code, (res.get("result") or res.get("error") or "ok") if self.txt else res)
         if v == "track" and arg in ("a", "s"):
             code, res = set_track(arg, arg2)
             return self.send(code, (res.get("result") or res.get("error") or "ok") if self.txt else res)

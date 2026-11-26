@@ -6,7 +6,7 @@ The app has two ways to reach Kodi. They share the same buttons and screens. Wit
 |---|---|---|
 | Status | Working, tested on hardware | Working, tested on a PSP against a real Kodi 21 |
 | What runs besides Kodi | `server/tvplay-api.py` on an always-on machine | nothing |
-| Menus | Remote, now-playing bar, volume, plus whatever the server offers (random episodes, live channels, favourites, queue, sleep timer) | Remote, now-playing bar, volume, fullscreen, queue, home, mute, next, previous, stop |
+| Menus | Remote, now-playing bar, volume, library, queue, audio and subtitles, typing, power, settings, plus what the server adds: random episodes, live channels with titles, favourites, sleep timer, seek, shuffle and repeat, queue undo and restore | Remote, now-playing bar, volume, fullscreen, library, queue, audio and subtitles, typing, power, settings, home, mute, next, previous, stop |
 | Kodi password on the PSP card | no, a separate token | yes (Kodi's web user and password) |
 | Finds Kodi by itself | no, you type the server address | yes: scans your network, or type the address |
 
@@ -81,22 +81,29 @@ First start:
 
 How Kodi is recognised: Kodi's web server answers a request without a login with `401` and `WWW-Authenticate: Basic realm="Kodi"` (older versions say `XBMC`), or with `pong` if it has no login. Any other device is ignored.
 
-What the menus do in this mode: show video fullscreen, queue (view and jump), Kodi home screen, mute, next, previous, stop, controls help, and the buttons below. Random episodes, live channels, favourites and the sleep timer are server-mode features and are not shown.
+What the menus do in this mode: show video fullscreen, the library, the queue, audio and subtitles, typing, power, settings, Kodi home screen, mute, next, previous, stop, controls help, and the buttons below. Random episodes, live channels, favourites, the sleep timer, seek, shuffle, repeat and queue undo need the server and are not shown.
 
 Limits: the scan covers one /24 network and port 8080 only (type the address for another port, as `192.168.1.20:8081`). The Kodi password is stored in plain text on the memory card, so use a Kodi login you use nowhere else. If Kodi's "Allow remote control via HTTP" is off, nothing can find it.
 
 ## What the menus do
 
-- **Queue:** the list shows Kodi's playlist (up to 128 items) and reloads by itself when Kodi moves to the next item or the list changes. START on an item opens its actions: play now, play next, move with the stick (the stick moves the item, START drops it), move up, move down, move to the end, remove. The playing item cannot be removed. With the server mode there is also "Undo the last queue change" and "Restore the queue from a snapshot" (the server saves a snapshot every minute and before each edit, keeps the newest 30, and restores with inserts and swaps only, so it never clears your queue).
+- **Library** (both modes): Continue watching, Recently added, Movies, and TV shows with seasons and episodes, read from Kodi's own video library. Watched items are dim and partly watched ones carry a marker. START on a movie or episode offers Play now, Play next (after the one playing) and Add to the end of the queue. The first row of an episode list adds the whole season in order. Lists of movies and shows load 40 at a time, with a "More" row at the end. In server mode an add or a play next can be undone with "Undo the last queue change"; Kodi alone has no undo, so remove the item from the queue instead.
+- **Seek, shuffle, repeat** (server mode): jump 30 seconds, 1 minute or 10 minutes either way, or to a percentage; toggle shuffle (the server saves the queue first, because Kodi reorders it) and cycle repeat. The bar shows elapsed and total time, and SHUFFLE or REPEAT when on.
+- **Queue:** the list shows Kodi's playlist (up to 128 items) and reloads by itself when Kodi moves to the next item or the list changes. START on an item opens its actions: play now, play next, move with the stick (the stick moves the item, START drops it), move up, move down, move to the end, remove. The playing item cannot be removed. The same menu can clear everything except the playing item, or the whole queue (red, START twice). With the server mode there is also "Undo the last queue change" and "Restore the queue from a snapshot" and "Bring back the queue from before the clear" (the server saves a snapshot every minute and before each edit, keeps the newest 30, saves the queue separately before every clear, and restores with inserts and swaps only).
 - **Audio and subtitles:** lists the tracks of the playing item, the current ones marked; choose one to switch.
 - **Type text into Kodi:** the PSP keyboard types into whatever text box Kodi has open (search, a login). Press OK on the remote afterwards.
 - **Power:** refresh the video library; restart Kodi (about 30 seconds); restart or power off the Kodi machine (shown in red). The last three need START pressed twice within five seconds. In server mode the server also refuses a second power action within a minute.
 - **Settings:** server address, port, token, Wi-Fi network name, debug line and the start mode, or in Kodi-alone mode the Kodi address, user name and password. Changes are saved to the card at once (`config.txt`, or `direct.txt`); the first save in a session keeps the old file as `config.txt.bak`. A mode change applies after restarting the app.
-- **Version:** shown on the boot screen, every connect screen and the help screen, as `0.3.0 (commit)`.
+- **Live list** (server mode): each live channel shows its stream category and title, the one you are watching is marked NOW, and the list refreshes itself every 30 seconds while it is open.
+- **Version:** shown on the boot screen, every connect screen and the help screen, as `0.4.0 (commit)`.
+
+## Optional: ARK-4 extras
+
+On a PSP with ARK-4, a build made with `make ARK_EXTRAS=1` adds two things a normal EBOOT cannot do: the music-note button shows the playing video fullscreen, and after 30 seconds without a button the screen goes black (any button brings it back, and that first press is not passed on to Kodi). They work by looking up three kernel functions through ARK's SystemControl (`sctrlHENFindFunction`) and calling them with kubridge (`kuKernelCall`); nothing is called unless all three are found. The result and a heartbeat while the screen is dark go to `boot.txt` next to the EBOOT. This build needs ARK-4's SystemControl and kubridge: on other firmware it shows a load error at launch, which is why the released EBOOT is built without it.
 
 ## Server tests
 
-`server/tests/test_api.py` starts the server against `fake_kodi.py` (a small stand-in for Kodi's JSON-RPC) and checks queue edits, undo, restore, tracks, text, power and the status fields. It never touches a real Kodi: run `python3 -I server/tests/test_api.py`.
+`server/tests/test_api.py` starts the server against `fake_kodi.py` (a small stand-in for Kodi's JSON-RPC) and checks queue edits, clearing, undo, restore, the library lists and actions, seek, shuffle, repeat, tracks, text, power and the status fields. It never touches a real Kodi: run `python3 -I server/tests/test_api.py`.
 
 ## Controls (both modes)
 

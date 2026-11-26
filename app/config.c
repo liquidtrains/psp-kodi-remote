@@ -28,6 +28,27 @@ int g_sq_cnt, g_sq_fired;                                    /* SQUARE: tap = Ko
 
 char g_qtitle[72];                                /* 0 = d-pad/X/O drive Kodi, 1 = they drive the PSP menu (toggle: L+R) */
 
+#ifdef ARK_EXTRAS
+/* ARK-extras flavor: a step list on the card, opened, appended and closed on every call, so it still works if a long-lived file handle goes stale */
+void crumb(const char *msg) {
+    char p[300];
+    int fd;
+    snprintf(p, sizeof(p), "%sboot.txt", g_dir);              /* next to the EBOOT that is running */
+    static int first = 1;                                    /* the first write of a run starts the file afresh, so it never grows */
+    fd = sceIoOpen(p, PSP_O_WRONLY | PSP_O_CREAT | (first ? PSP_O_TRUNC : PSP_O_APPEND), 0777);
+    first = 0;
+    if (fd >= 0) { sceIoWrite(fd, msg, strlen(msg)); sceIoWrite(fd, "\n", 1); sceIoClose(fd); }
+}
+#else
+void crumb(const char *msg) { (void)msg; }
+#endif
+
+volatile unsigned long long g_last_input;
+int idle_seconds(void) {                               /* seconds since the last button or stick use */
+    unsigned long long now = sceKernelGetSystemTimeWide();
+    return g_last_input && now > g_last_input ? (int)((now - g_last_input) / 1000000ULL) : 0;
+}
+
 unsigned g_frame, g_stop_armed;                 /* frame counter; frame at which "Stop playback" was first pressed */
 
 void logf_(const char *fmt, const char *a) { if (g_log) { fprintf(g_log, fmt, a); fputc('\n', g_log); fflush(g_log); } }
